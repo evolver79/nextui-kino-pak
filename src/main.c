@@ -17,9 +17,10 @@ enum { BTN_A = SDL_CONTROLLER_BUTTON_B, BTN_B = SDL_CONTROLLER_BUTTON_A, BTN_X =
        BTN_Y = SDL_CONTROLLER_BUTTON_X, BTN_START = SDL_CONTROLLER_BUTTON_START, BTN_SELECT = SDL_CONTROLLER_BUTTON_BACK,
        BTN_MENU = SDL_CONTROLLER_BUTTON_GUIDE, BTN_L1 = SDL_CONTROLLER_BUTTON_LEFTSHOULDER, BTN_R1 = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
        BTN_UP = SDL_CONTROLLER_BUTTON_DPAD_UP, BTN_DOWN = SDL_CONTROLLER_BUTTON_DPAD_DOWN,
-       BTN_LEFT = SDL_CONTROLLER_BUTTON_DPAD_LEFT, BTN_RIGHT = SDL_CONTROLLER_BUTTON_DPAD_RIGHT };
+       BTN_LEFT = SDL_CONTROLLER_BUTTON_DPAD_LEFT, BTN_RIGHT = SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
+       BTN_L2 = SDL_CONTROLLER_BUTTON_MAX + 1, BTN_R2 = SDL_CONTROLLER_BUTTON_MAX + 2 };   // triggers are axes in SDL
 enum { SCR_BROWSE, SCR_PLAY, SCR_OPTIONS };
-enum { O_ASPECT, O_BRIGHT, O_CONTRAST, O_DEINT, O_SUBS, O_TRACK, O_PREFER, O_LEDS, O_HWDEC, O_GROUND, NOPT };
+enum { O_ASPECT, O_BRIGHT, O_CONTRAST, O_DEINT, O_FILTER, O_SUBS, O_TRACK, O_PREFER, O_LEDS, O_HWDEC, O_GROUND, NOPT };
 #define ROWS 5
 #define MAXDEPTH 32
 
@@ -36,6 +37,9 @@ static Uint32 overlay_until, toast_until, seek_until;
 static int seek_dir;   // -1/1: the rewind/forward button shows the last seek for a moment
 static int on_bar;     // overlay focus on the progress bar (scrubbing); scrub_to = where A would jump
 static double scrub_to;
+static char info[48];   // "ASPECT · 16:9" pill after L2/R2 or L1/R1 while playing
+static Uint32 info_until;
+static SDL_Texture *crt_tex;
 static char toast[64];
 static SDL_Texture *thumb_tex;
 static char thumb_for[1400];
@@ -304,6 +308,22 @@ static void draw_video(void) {
   SDL_Rect d;
   SDL_Texture *t = player_texture(&d);
   if (t) SDL_RenderCopy(ren, t, NULL, &d);
+  if (t && settings.filter == FILTER_CRT) {   // scanlines every third row and a soft vignette, made once
+    if (!crt_tex) {
+      static Uint32 px[W * H];
+      for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+          float dx = (x - W / 2.f) / (W / 2.f), dy = (y - H / 2.f) / (H / 2.f), v = (dx * dx + dy * dy) * .5f;
+          int a = (int)(v * v * 255 * .55f) + (y % 3 == 2 ? 110 : 0);
+          px[y * W + x] = (Uint32)(a > 255 ? 255 : a) << 24;
+        }
+      crt_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, W, H);
+      SDL_UpdateTexture(crt_tex, NULL, px, W * 4);
+      SDL_SetTextureBlendMode(crt_tex, SDL_BLENDMODE_BLEND);
+    }
+    SDL_Rect c = d;
+    if (SDL_IntersectRect(&d, &(SDL_Rect){ 0, 0, W, H }, &c)) SDL_RenderCopy(ren, crt_tex, &c, &c);
+  }
 }
 
 static void draw_overlay(void) {
@@ -328,11 +348,10 @@ static void draw_overlay(void) {
   dot_round(dot, 806, 570, paused ? DOT_I_PLAY : DOT_I_PAUSE, 1, seeking || on_bar ? 0 : DOT_FOCUS);
   dot_round(dot, 900, 570, DOT_I_FWD, 0, seeking > 0 ? DOT_FOCUS | DOT_ON : 0);
   dot_progress(dot, 76, 644, 872, len > 0 ? (float)(pos / len) : 0, on_bar ? 2 : 1);
-  dot_text(dot, DOT_LABEL_T, on_bar ? "◀ ▶ move · A jump here · B cancel" : "◀ ▶ 10 s · L1 R1 1 min · ▼ scrub · Y options · B stop",
+  dot_text(dot, DOT_LABEL_T, on_bar ? "◀ ▶ move · L1 R1 faster · A jump here · B cancel" : "◀ ▶ 10 s · ▼ scrub · L1 R1 filter · L2 R2 aspect",
            76, 690, DOT_LABEL, DOT_LEFT, 872);
 }
 
-static const char *ASPECTS[NASPECT] = { "Original", "4:3", "16:9", "Stretch", "Zoom" };
 static const char *DEINTS[NDEINT] = { "AUTO", "ON", "OFF" };
 
 static void draw_options(void) {
@@ -344,13 +363,16 @@ static void draw_options(void) {
   dot_header(dot, NULL, "B close");
   int f[NOPT]; for (int i = 0; i < NOPT; i++) f[i] = opt_sel == i ? DOT_FOCUS : 0;
   // Two columns of 464, cards 16 apart; heights follow their content (chips wrap to two lines).
-  int P = DOT_OPT_PITCH, ha = dot_panel_h(6 + 2 * DOT_CHIP_H + 10), hp = dot_panel_h(3 * P - 8), hs = hp, hb = dot_panel_h(3 * P - 8);
+  int P = DOT_OPT_PITCH, ha = dot_panel_h(6 + 2 * DOT_CHIP_H + 10), hp = dot_panel_h(4 * P - 8), hs = dot_panel_h(3 * P - 8), hb = dot_panel_h(3 * P - 8);
   int y = dot_panel(dot, 40, 96, 464, ha, "Aspect");
-  dot_chips(dot, 70, y + 6, 404, ASPECTS, NASPECT, settings.aspect, opt_sel == O_ASPECT ? settings.aspect : -1);
+  dot_chips(dot, 70, y + 6, 404, ASPECT_NAMES, NASPECT, settings.aspect, opt_sel == O_ASPECT ? settings.aspect : -1);
   y = dot_panel(dot, 40, 96 + ha + 16, 464, hp, "Picture");
   dot_opt_slider(dot, 70, y, 404, "Brightness", (settings.brightness + 50) / 100.f, f[O_BRIGHT]);
   dot_opt_slider(dot, 70, y + P, 404, "Contrast", (settings.contrast + 50) / 100.f, f[O_CONTRAST]);
   dot_opt(dot, 70, y + 2 * P, 404, "Deinterlace", DEINTS[settings.deint], f[O_DEINT]);
+  char fname[32]; snprintf(fname, sizeof fname, "%s", FILTER_NAMES[settings.filter]);
+  for (char *q = fname; *q; q++) if (*q >= 'a' && *q <= 'z') *q -= 32;
+  dot_opt(dot, 70, y + 3 * P, 404, "Filter", fname, f[O_FILTER]);
   y = dot_panel(dot, 520, 96, 464, hs, "Subtitles");
   dot_opt_toggle(dot, 550, y, 404, "Show", settings.subs, f[O_SUBS]);
   dot_opt(dot, 550, y + P, 404, "Track", player_sub_label(), f[O_TRACK] | (player_active() ? 0 : DOT_OFF));
@@ -373,6 +395,7 @@ static void draw(void) {
   else {
     draw_video();
     if (player_paused() || on_bar || now < overlay_until) draw_overlay();
+    if (now < info_until) dot_pill(dot, W / 2, 36, info, 0, 1, DOT_CENTER);
   }
   if (now < toast_until) {
     Uint32 left = toast_until - now;
@@ -404,6 +427,7 @@ static void change_option(int dir) {
     case O_BRIGHT: settings.brightness = clampi(settings.brightness + 5 * dir, -50, 50); break;
     case O_CONTRAST: settings.contrast = clampi(settings.contrast + 5 * dir, -50, 50); break;
     case O_DEINT: settings.deint = (settings.deint + NDEINT + dir) % NDEINT; break;
+    case O_FILTER: settings.filter = (settings.filter + NFILTER + dir) % NFILTER; break;
     case O_SUBS: settings.subs = !settings.subs; break;
     case O_TRACK: if (player_active()) player_cycle_sub(dir); return;
     case O_PREFER: settings.prefer = (settings.prefer + NPREFER + dir) % NPREFER; break;
@@ -453,11 +477,26 @@ static void on_button(int b) {
     switch (b) {
       case BTN_DOWN: if (was_visible) { on_bar = 1; scrub_to = player_pos(); } break;
       case BTN_A: player_pause(!player_paused()); break;
-      case BTN_LEFT: case BTN_RIGHT: case BTN_L1: case BTN_R1:
-        seek_dir = b == BTN_LEFT || b == BTN_L1 ? -1 : 1;
+      case BTN_LEFT: case BTN_RIGHT:
+        seek_dir = b == BTN_LEFT ? -1 : 1;
         seek_until = SDL_GetTicks() + 450;
-        player_seek(seek_dir * (b == BTN_L1 || b == BTN_R1 ? 60 : 10));
+        player_seek(seek_dir * 10);
         break;
+      case BTN_L1: case BTN_R1: case BTN_L2: case BTN_R2: {   // filter (L1/R1) and aspect (L2/R2), shown in a pill
+        int dir = b == BTN_L1 || b == BTN_L2 ? -1 : 1;
+        if (b == BTN_L1 || b == BTN_R1) {
+          settings.filter = (settings.filter + NFILTER + dir) % NFILTER;
+          snprintf(info, sizeof info, "Filter · %s", FILTER_NAMES[settings.filter]);
+        } else {
+          settings.aspect = (settings.aspect + NASPECT + dir) % NASPECT;
+          snprintf(info, sizeof info, "Aspect · %s", ASPECT_NAMES[settings.aspect]);
+        }
+        info_until = SDL_GetTicks() + 1500;
+        overlay_until = 0;
+        settings_save();
+        player_apply_settings();
+        break;
+      }
       case BTN_Y: open_options(); break;
       case BTN_B: stop(0); break;
     }
@@ -525,6 +564,9 @@ static void shots(const char *out) {
   on_button(BTN_RIGHT); pump(200); shot(out, "playing-seek");
   on_button(BTN_DOWN); for (int i = 0; i < 12; i++) on_button(BTN_RIGHT);
   shot(out, "playing-scrub"); on_button(BTN_B);
+  for (int i = 0; i < FILTER_CRT; i++) on_button(BTN_R1);
+  pump(600); player_frame(); shot(out, "playing-crt");
+  on_button(BTN_R1); on_button(BTN_R2); pump(300); shot(out, "playing-aspect");
   overlay_until = 0; player_pause(0); pump(800); shot(out, "playing-clean");
   open_options(); opt_sel = O_BRIGHT; pump(300); shot(out, "options-night");
   close_options(); stop(0); shot(out, "browse-toast");
@@ -598,6 +640,13 @@ int main(int argc, char **argv) {
           on_button(b);
           if (b == BTN_UP || b == BTN_DOWN || b == BTN_LEFT || b == BTN_RIGHT) { held = b; repeat_at = SDL_GetTicks() + 400; }
         } else if (e.type == SDL_CONTROLLERBUTTONUP && e.cbutton.button == held) held = -1;
+        else if (e.type == SDL_CONTROLLERAXISMOTION && (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT ||
+                                                        e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT)) {
+          static int down[2];   // a trigger counts as a press when it crosses half way
+          int i = e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT, now_down = e.caxis.value > 16000;
+          if (now_down && !down[i]) on_button(i ? BTN_R2 : BTN_L2);
+          down[i] = now_down;
+        }
         else if (player_handle(&e) && screen != SCR_BROWSE) { if (screen == SCR_OPTIONS) screen = SCR_PLAY; stop(1); }
         got = SDL_PollEvent(&e);
       }
@@ -605,7 +654,8 @@ int main(int argc, char **argv) {
       if (screen == SCR_PLAY && SDL_GetTicks() - last_save > 30000) { save_position(); last_save = SDL_GetTicks(); }
       int fresh = player_active() && player_frame();
       if (player_active() && screen != SCR_BROWSE) leds_follow(player_accent()); else leds_restore();
-      if (screen == SCR_PLAY && !fresh && !player_paused() && !on_bar && SDL_GetTicks() >= overlay_until + 100) continue;
+      if (screen == SCR_PLAY && !fresh && !player_paused() && !on_bar && SDL_GetTicks() >= overlay_until + 100 &&
+          SDL_GetTicks() >= info_until + 100) continue;
       draw();
       SDL_RenderPresent(ren);
     }
@@ -614,6 +664,7 @@ int main(int argc, char **argv) {
   store_save();
   media_stop();
   if (thumb_tex) SDL_DestroyTexture(thumb_tex);
+  if (crt_tex) SDL_DestroyTexture(crt_tex);
   dot_quit(dot);
   player_quit();
   SDL_Quit();

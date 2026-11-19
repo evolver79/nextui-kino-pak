@@ -37,10 +37,13 @@ void store_save(void);
 
 enum { ASPECT_ORIGINAL, ASPECT_4_3, ASPECT_16_9, ASPECT_STRETCH, ASPECT_ZOOM, NASPECT };
 enum { DEINT_AUTO, DEINT_ON, DEINT_OFF, NDEINT };
+enum { FILTER_NONE, FILTER_SHARPEN, FILTER_WARM, FILTER_COOL, FILTER_BW, FILTER_CRT, NFILTER };
+extern const char *FILTER_NAMES[NFILTER], *ASPECT_NAMES[NASPECT];
 typedef struct {
   int aspect, brightness, contrast, deint;   // brightness/contrast -50..50 (mpv's -100..100 is too much)
   int subs, prefer, leds, ground;            // prefer = index into PREFER_LANGS; ground = Dot light point (test)
   int hwdec;                                 // the video engine for H.264/HEVC (src/cedar)
+  int filter;                                // FILTER_*: L1/R1 while playing
 } Settings;
 extern Settings settings;
 extern const char *PREFER_LANGS[], *PREFER_LABELS[];
