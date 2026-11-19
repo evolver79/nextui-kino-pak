@@ -24,12 +24,17 @@ int jf_discover(char *server, size_t n);           // asks the LAN (UDP 7359); 1
 int jf_qc_start(const char *server, char *code, size_t n);
 int jf_qc_poll(void);                              // 1 approved and logged in (saved), 0 not yet, -1 failed
 
-int jf_views(JfItem **out);                        // the user's libraries; returns the count (-1 on error)
+// The Jellyfin root: "Continue watching" and "Next up" (when not empty, ids "resume"/"nextup", type "Special"),
+// then the user's libraries. Returns the count (-1 on error).
+int jf_views(JfItem **out);
 int jf_children(const char *parent_id, const char *parent_type, JfItem **out);
 void jf_stream_url(const JfItem *it, char *out, size_t n);
 // Asks the server how to play it on the Brick (direct play, or transcoded to H.264/AAC HLS). Fills the url to
 // play; returns 1 direct, 2 transcoded, 0 failed. The play session is kept for the playback reports.
 int jf_playback(const JfItem *it, char *out, size_t n);
+// Subtitle files the server offers for what jf_playback just set up (next to the video, or text tracks a
+// transcode can't carry): i from 0 until it returns 0.
+int jf_subtitle(int i, const char **url, const char **title, const char **lang);
 void jf_poster_url(const JfItem *it, int w, int h, char *out, size_t n);   // 2:3 cover for the grid
 void jf_image_url(const JfItem *it, int w, int h, char *out, size_t n);   // 16:9 picture for the detail card
 // Playback reports: what 0 = started, 1 = progress, 2 = stopped. Runs on its own thread, returns at once.

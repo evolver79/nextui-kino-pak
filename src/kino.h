@@ -59,6 +59,7 @@ void settings_save(void);
 int player_init(SDL_Renderer *r, int audio);
 void player_quit(void);
 void player_open(const char *path, double start);
+void player_add_sub(const char *url, const char *title, const char *lang);   // before player_open: loaded with the file
 void player_close(void);                   // stops; the caller saves the position first
 int player_active(void);
 int player_handle(SDL_Event *e);           // mpv's events; returns 1 when the file ended

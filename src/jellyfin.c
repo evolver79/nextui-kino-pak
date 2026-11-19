@@ -16,6 +16,9 @@
 #include <unistd.h>
 
 static char play_session[80], play_method[16] = "DirectPlay";
+typedef struct { char url[700], title[96], lang[16]; } Sub;
+static Sub subs[12];
+static int nsubs;
 static char server[256], user_id[64], user_name[128], token[128], device_id[40], qc_secret[160], path_cfg[1100];
 
 static void save(void) {
@@ -202,13 +205,38 @@ static int list(const char *path, JfItem **out) {
 }
 
 int jf_views(JfItem **out) {
-  char p[200]; snprintf(p, sizeof p, "/Users/%s/Views", user_id);
-  return list(p, out);
+  char p[300];
+  snprintf(p, sizeof p, "/Users/%s/Views", user_id);
+  JfItem *views; int nv = list(p, &views);
+  if (nv < 0) { *out = NULL; return -1; }
+  JfItem *tmp;
+  snprintf(p, sizeof p, "/Users/%s/Items/Resume?MediaTypes=Video&Limit=1", user_id);
+  int nr = list(p, &tmp); free(tmp);
+  snprintf(p, sizeof p, "/Shows/NextUp?UserId=%s&Limit=1", user_id);
+  int nn = list(p, &tmp); free(tmp);
+  int n = nv + (nr > 0) + (nn > 0), k = 0;
+  *out = calloc(n ? n : 1, sizeof **out);
+  if (nr > 0) { JfItem *it = &(*out)[k++]; snprintf(it->id, sizeof it->id, "resume"); snprintf(it->type, sizeof it->type, "Special");
+                snprintf(it->name, sizeof it->name, "Continue watching"); it->folder = 1; }
+  if (nn > 0) { JfItem *it = &(*out)[k++]; snprintf(it->id, sizeof it->id, "nextup"); snprintf(it->type, sizeof it->type, "Special");
+                snprintf(it->name, sizeof it->name, "Next up"); it->folder = 1; }
+  memcpy(*out + k, views, nv * sizeof *views);
+  free(views);
+  return n;
 }
 
 int jf_children(const char *parent_id, const char *parent_type, JfItem **out) {
   int episodes = !strcmp(parent_type, "Season") || !strcmp(parent_type, "Series");
   char p[500];
+  const char *fields = "Fields=Overview,BackdropImageTags,SeriesName,ProductionYear";
+  if (!strcmp(parent_id, "resume")) {
+    snprintf(p, sizeof p, "/Users/%s/Items/Resume?MediaTypes=Video&Limit=50&%s", user_id, fields);
+    return list(p, out);
+  }
+  if (!strcmp(parent_id, "nextup")) {
+    snprintf(p, sizeof p, "/Shows/NextUp?UserId=%s&Limit=50&%s", user_id, fields);
+    return list(p, out);
+  }
   // Film and series libraries: every film / series in them (as the Jellyfin apps show), not the raw folders.
   const char *kind = strstr(parent_type, ":movies") ? "Movie" : strstr(parent_type, ":tvshow") ? "Series" : NULL;
   if (kind) {
@@ -263,6 +291,19 @@ int jf_playback(const JfItem *it, char *out, size_t n) {
   snprintf(play_session, sizeof play_session, "%s", jstr(j, "PlaySessionId"));
   cJSON *ms = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(j, "MediaSources"), 0);
   int how = 1;
+  nsubs = 0;
+  cJSON *st;
+  cJSON_ArrayForEach(st, ms ? cJSON_GetObjectItemCaseSensitive(ms, "MediaStreams") : NULL) {   // subtitle files
+    if (strcmp(jstr(st, "Type"), "Subtitle") || strcmp(jstr(st, "DeliveryMethod"), "External") || !*jstr(st, "DeliveryUrl")) continue;
+    if (nsubs == 12) break;
+    Sub *b = &subs[nsubs++];
+    const char *u = jstr(st, "DeliveryUrl");
+    snprintf(b->url, sizeof b->url, "%s%s%s", strncmp(u, "http", 4) ? server : "", u,
+             strstr(u, "api_key=") ? "" : strchr(u, '?') ? "&api_key=" : "?api_key=");
+    if (!strstr(u, "api_key=")) { size_t l = strlen(b->url); snprintf(b->url + l, sizeof b->url - l, "%s", token); }
+    snprintf(b->title, sizeof b->title, "%s", *jstr(st, "DisplayTitle") ? jstr(st, "DisplayTitle") : jstr(st, "Title"));
+    snprintf(b->lang, sizeof b->lang, "%s", jstr(st, "Language"));
+  }
   if (ms && !jbool(ms, "SupportsDirectPlay") && *jstr(ms, "TranscodingUrl")) {
     snprintf(out, n, "%s%s", server, jstr(ms, "TranscodingUrl"));
     snprintf(play_method, sizeof play_method, "Transcode");
@@ -277,6 +318,12 @@ int jf_playback(const JfItem *it, char *out, size_t n) {
   }
   cJSON_Delete(j);
   return how;
+}
+
+int jf_subtitle(int i, const char **url, const char **title, const char **lang) {
+  if (i < 0 || i >= nsubs) return 0;
+  *url = subs[i].url; *title = subs[i].title; *lang = subs[i].lang;
+  return 1;
 }
 
 void jf_poster_url(const JfItem *it, int w, int h, char *out, size_t n) {

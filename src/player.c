@@ -14,6 +14,8 @@ static SDL_Texture *tex;
 static int tw, th, active, pending, stopping, frames, deint_checked;
 static Uint32 ev_mpv, ev_redraw, accent = 0xff6a2b;
 static char sub_label[64];
+static char pend_url[12][700], pend_title[12][96], pend_lang[12][16];
+static int npend;
 
 static void on_wakeup(void *ud) { (void)ud; SDL_Event e = { .type = ev_mpv }; SDL_PushEvent(&e); }
 static void on_update(void *ud) { (void)ud; SDL_Event e = { .type = ev_redraw }; SDL_PushEvent(&e); }
@@ -59,6 +61,14 @@ void player_quit(void) {
   rctx = NULL; mpv = NULL; tex = NULL;
 }
 
+void player_add_sub(const char *url, const char *title, const char *lang) {
+  if (npend == 12) return;
+  snprintf(pend_url[npend], sizeof pend_url[npend], "%s", url);
+  snprintf(pend_title[npend], sizeof pend_title[npend], "%s", title);
+  snprintf(pend_lang[npend], sizeof pend_lang[npend], "%s", lang);
+  npend++;
+}
+
 void player_open(const char *path, double start) {
   char opt[64]; snprintf(opt, sizeof opt, "start=%.1f,pause=no", start > 0 ? start : 0);
   player_apply_settings();
@@ -85,6 +95,11 @@ int player_handle(SDL_Event *e) {
     mpv_event *me = mpv_wait_event(mpv, 0);
     if (me->event_id == MPV_EVENT_NONE) break;
     if (me->event_id == MPV_EVENT_FILE_LOADED) {
+      for (int i = 0; i < npend; i++) {   // the server's subtitle files; "auto" lets slang pick as usual
+        const char *v[] = { "sub-add", pend_url[i], "auto", pend_title[i], pend_lang[i], NULL };
+        mpv_command(mpv, v);
+      }
+      npend = 0;
       char *dec = mpv_get_property_string(mpv, "current-tracks/video/decoder-desc");
       char *codec = mpv_get_property_string(mpv, "video-codec");
       fprintf(stderr, "video: %s, decoder %s\n", codec ? codec : "?", dec ? dec : "?");

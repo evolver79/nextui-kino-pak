@@ -146,7 +146,7 @@ static void want_media(void) {
   }
   if (jf_mode) {   // the detail card's picture comes from the server (FFmpeg decodes the JPEG)
     char url[600] = "";
-    if (cursor < nitems) jf_image_url(&jitems[cursor], THUMB_W, THUMB_H, url, sizeof url);
+    if (cursor < nitems && strcmp(jitems[cursor].type, "Special")) jf_image_url(&jitems[cursor], THUMB_W, THUMB_H, url, sizeof url);
     media_want(url, NULL, 0);
     return;
   }
@@ -231,7 +231,10 @@ static void jf_show(JfItem *list, int n) {   // the listed items become the brow
   free(items); items = calloc(n > 0 ? n : 1, sizeof *items); nitems = n > 0 ? n : 0;
   for (int i = 0; i < nitems; i++) {
     JfItem *it = &jitems[i];
-    if (!strcmp(it->type, "Episode") && it->index)
+    int special = jf_depth > 0 && !strcmp(jstack[jf_depth].type, "Special");
+    if (!strcmp(it->type, "Episode") && special && it->series[0])   // Continue watching / Next up: the series first
+      snprintf(items[i].name, sizeof items[i].name, "%s · S%d E%d", it->series, it->season, it->index);
+    else if (!strcmp(it->type, "Episode") && it->index)
       snprintf(items[i].name, sizeof items[i].name, "%d · %s", it->index, it->name);
     else snprintf(items[i].name, sizeof items[i].name, "%s", it->name);
     items[i].dir = it->folder;
@@ -295,6 +298,8 @@ static void job_finished(void) {
   } else if (job_kind == J_PLAY) {   // the server said how: direct play or its transcode
     jf_transcoded = job_result == 2;
     snprintf(playing, sizeof playing, "%s", jf_play_url);
+    const char *su, *st, *sl;
+    for (int i = 0; jf_subtitle(i, &su, &st, &sl); i++) player_add_sub(su, st, sl);
     double start = jf_play_from_start ? 0 : playing_jf.pos;
     player_open(playing, start);
     jf_report(0, playing_jf.id, start, 0);
@@ -442,6 +447,7 @@ static void jf_label(const JfItem *it, char *out, size_t n) {   // "S1 · E3 · 
   else if (!strcmp(it->type, "Movie") || !strcmp(it->type, "Video"))
     { if (it->year) snprintf(out, n, "%d%s%s", it->year, *len ? " · " : "", len); else snprintf(out, n, "%s", len); }
   else if (!strcmp(it->type, "Series")) snprintf(out, n, it->unplayed ? "Series · %d new" : "Series", it->unplayed);
+  else if (!strcmp(it->type, "Special")) snprintf(out, n, "%s", !strcmp(it->id, "resume") ? "Films and episodes you started" : "The next episode of each series");
   else if (!strcmp(it->type, "Season")) snprintf(out, n, it->unplayed ? "Season · %d new" : "Season", it->unplayed);
   else if (!strncmp(it->type, "CollectionFolder", 16) || !strcmp(it->type, "UserView")) snprintf(out, n, "Library");
   else snprintf(out, n, "%s", it->folder ? "Folder" : len);
@@ -455,11 +461,13 @@ static void draw_detail_jf(void) {
     return;
   }
   JfItem *it = &jitems[cursor];
-  char url[600], buf[64];
-  jf_image_url(it, THUMB_W, THUMB_H, url, sizeof url);
-  draw_thumb_area(56, 112, url, 0);
-  dot_text(dot, DOT_TITLE, it->name, 70, 374, DOT_TEXT, DOT_LEFT, 400);
+  char url[600], buf[256];
+  if (strcmp(it->type, "Special")) jf_image_url(it, THUMB_W, THUMB_H, url, sizeof url); else url[0] = 0;
+  draw_thumb_area(56, 112, url, url[0] == 0);
+  int ep_of_series = !strcmp(it->type, "Episode") && it->series[0];   // episodes: the series is the title
+  dot_text(dot, DOT_TITLE, ep_of_series ? it->series : it->name, 70, 374, DOT_TEXT, DOT_LEFT, 400);
   jf_label(it, buf, sizeof buf);
+  if (ep_of_series) { size_t l = strlen(buf); snprintf(buf + l, sizeof buf - l, " · %s", it->name); }
   dot_text(dot, DOT_LABEL_T, buf, 70, 424, DOT_LABEL, DOT_LEFT, 400);
   if (it->folder) return;
   Uint32 acc = !strcmp(thumb_for, url) ? thumb_accent : DOT_ACCENT_KINO;
@@ -598,7 +606,8 @@ static void draw_browse(void) {
       else if (st == RES_PARTIAL && dur > 0) snprintf(meta, sizeof meta, "%d%%", (int)(100 * pos / dur));
       else if (media_info(path, &mi) && mi.duration > 0) fmt_time(mi.duration, meta, sizeof meta);
     }
-    dot_row(dot, 524, 96 + 94 * (i - top), 460, items[i].virt ? DOT_I_TV : items[i].dir ? DOT_I_FOLDER : DOT_I_FILM,
+    int icon = items[i].virt ? DOT_I_TV : jf_mode && !strcmp(jitems[i].type, "Special") ? DOT_I_PLAY : items[i].dir ? DOT_I_FOLDER : DOT_I_FILM;
+    dot_row(dot, 524, 96 + 94 * (i - top), 460, icon,
             items[i].dir && !jf_mode ? items[i].name : title, NULL, meta, i == cursor ? DOT_FOCUS : 0, 0);
   }
   DotHint h[4]; int n = 0;
@@ -954,8 +963,16 @@ static void shots(const char *out) {
   screen = SCR_BROWSE; jf_enter();
   for (int t = 0; t < 400 && (job_th || jf_loading); t++) { SDL_Delay(25); if (job_th && SDL_AtomicGet(&job_done)) job_finished(); }
   wait_media(); shot(out, "jf-libraries");
-  for (int lib = 0, nlib = nitems; lib < nlib && lib < 4; lib++) {
-    if (lib) { jf_leave_level(); for (int t = 0; t < 400 && (job_th || jf_loading); t++) { SDL_Delay(25); if (job_th && SDL_AtomicGet(&job_done)) job_finished(); } }
+  #define JF_WAIT() for (int t = 0; t < 400 && (job_th || jf_loading); t++) { SDL_Delay(25); if (job_th && SDL_AtomicGet(&job_done)) job_finished(); }
+  for (int sp = 0; sp < 2 && sp < nitems && !strcmp(jitems[sp].type, "Special"); sp++) {   // Continue watching, Next up
+    set_cursor(sp); on_button(BTN_A); JF_WAIT();
+    wait_media(); for (int t = 0; t < 100 && strcmp(thumb_for, "") == 0; t++) SDL_Delay(30);
+    shot(out, sp ? "jf-nextup" : "jf-resume");
+    jf_leave_level(); JF_WAIT();
+  }
+  int first_lib = 0; while (first_lib < nitems && !strcmp(jitems[first_lib].type, "Special")) first_lib++;
+  for (int lib = first_lib, nlib = nitems; lib < nlib && lib < first_lib + 2; lib++) {
+    if (lib > first_lib) { jf_leave_level(); for (int t = 0; t < 400 && (job_th || jf_loading); t++) { SDL_Delay(25); if (job_th && SDL_AtomicGet(&job_done)) job_finished(); } }
     set_cursor(lib); on_button(BTN_A);
     for (int t = 0; t < 400 && (job_th || jf_loading); t++) { SDL_Delay(25); if (job_th && SDL_AtomicGet(&job_done)) job_finished(); }
     if (jf_grid) {
