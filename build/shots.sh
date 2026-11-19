@@ -1,0 +1,20 @@
+#!/bin/sh
+# Builds Kino, then renders its screens headless (SDL dummy video, software renderer, no sound) from the test videos
+# in test/ into build/out/shots/*.png, to compare with the Dot style guide. The video tree is made of symlinks.
+set -e
+cd "$(dirname "$0")/.."
+build/build.sh >/dev/null
+O=build/out/shots
+rm -rf $O && mkdir -p "$O/videos/Films" "$O/videos/Series/Northern" "$O/user"
+ln -s ../../../../../test/hevc-1080p.mkv "$O/videos/Films/The Long Harbour.mkv"
+ln -s ../../../../../test/h264-720p.mp4 "$O/videos/Films/Rally Highlights.mp4"
+i=1; for f in h264-480p.mp4 h264-720p.mp4 hevc-720p.mkv h264-1080p.mp4 hevc-1080p.mkv; do
+  n=$(echo "Dark Snow Ice Thaw Light" | cut -d' ' -f$i)
+  ln -s ../../../../../../test/$f "$O/videos/Series/Northern/Episode $i · $n.${f##*.}"; i=$((i+1))
+done
+ln -s ../../../../test/h264-480p.mp4 "$O/videos/Northern Lights Timelapse.mp4"
+docker run --rm -v "$PWD:/w" -w /w -e SDL_VIDEODRIVER=dummy -e SDL_AUDIODRIVER=dummy nextui-kino-build sh -c "
+mkdir -p $O/pak && cp -r ui/dot/fonts $O/pak/
+build/out/kino $O/user $O/pak --shots $O $O/videos"
+for f in $O/*.bmp; do ffmpeg -v error -y -i "$f" "${f%.bmp}.png" && rm "$f"; done
+ls $O/*.png

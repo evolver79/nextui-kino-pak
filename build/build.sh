@@ -9,7 +9,7 @@ docker run --rm -v "$PWD:/w" -w /w nextui-kino-build sh -c "
 set -e
 sh build/deps.sh >build/out/deps.log 2>&1 || { tail -40 build/out/deps.log; exit 1; }
 export PKG_CONFIG_PATH=/w/build/out/prefix/lib/pkgconfig
-gcc -O2 -Wall -o build/out/kino src/*.c -Ibuild/out/prefix/include \$(pkg-config --cflags sdl2) \
+gcc -O2 -Wall -o build/out/kino src/*.c ui/dot/src/dot.c -Iui/dot/src -Ibuild/out/prefix/include \$(pkg-config --cflags sdl2) \
   -Lbuild/out/prefix/lib -lmpv -lass -lharfbuzz -lfribidi -lfreetype -lavfilter -lpostproc -lavformat -lavcodec -lswresample -lswscale -lavutil \
   \$(pkg-config --libs sdl2) -lSDL2_ttf -lz -lstdc++ -latomic -lpthread -ldl -lrt -lm
 strip build/out/kino

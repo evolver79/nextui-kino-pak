@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 brick ping >/dev/null
 build/build.sh
 cp build/out/kino Kino.pak/kino
+rm -rf Kino.pak/fonts && cp -r ui/dot/fonts Kino.pak/fonts
 brick deploy Kino.pak >/dev/null
 if [ "$1" = --bench ]; then
   brick push $(ls test/*.mp4 test/*.mkv) /mnt/SDCARD/Videos/kino-test >/dev/null
