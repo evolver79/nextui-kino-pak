@@ -4,6 +4,7 @@
 # are in build/out/prefix/lib, so those are linked statically; SDL2, zlib and libstdc++ come from the Brick.
 set -e
 cd "$(dirname "$0")/.."
+sh build/fetch.sh
 docker build -q -t nextui-kino-build build >/dev/null
 docker run --rm -v "$PWD:/w" -w /w nextui-kino-build sh -c "
 set -e

@@ -1192,7 +1192,7 @@ static void shots(const char *out) {
   on_button(BTN_X); shot(out, "help-from-options"); on_button(BTN_B);
   help_back = SCR_BROWSE; screen = SCR_HELP; shot(out, "help-first-start"); screen = SCR_OPTIONS;
   screen = SCR_CONNECT; snprintf(jf_code, sizeof jf_code, "722223");
-  snprintf(connect_msg, sizeof connect_msg, "http://192.168.68.152:8096"); shot(out, "jellyfin-connect");
+  snprintf(connect_msg, sizeof connect_msg, "http://192.168.1.20:8096"); shot(out, "jellyfin-connect");
   if (!jf_logged_in()) return;
   // With a login in the user folder: the real libraries, the first grid, and a series opened.
   screen = SCR_BROWSE; jf_enter();
