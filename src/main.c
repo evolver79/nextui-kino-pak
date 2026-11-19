@@ -580,6 +580,8 @@ static double cpu_seconds(void) {
 }
 
 static int bench(const char *file, double secs) {
+  const char *flt = getenv("KINO_FILTER");   // measure a filter: KINO_FILTER=2 kino --bench ...
+  if (flt) { settings.filter = atoi(flt) % NFILTER; player_apply_settings(); }
   player_open(file, 0);
   long frames = 0; Uint32 t0 = 0; double c0 = 0;
   while (running) {

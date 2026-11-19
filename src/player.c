@@ -160,13 +160,16 @@ void player_apply_settings(void) {
   char g[256] = "";
   size_t n = 0;
   #define ADD(...) n += snprintf(g + n, sizeof g - n, "%s", n ? "," : ""), n += snprintf(g + n, sizeof g - n, __VA_ARGS__)
+  // First down to screen size: a 1080p picture has 2-3x the pixels the filters (and mpv after them) need.
+  if ((settings.brightness || settings.contrast || settings.filter) && settings.filter != FILTER_CRT)
+    ADD("scale=w='min(iw,1024)':h='min(ih,768)':force_original_aspect_ratio=decrease:flags=fast_bilinear");
   if (settings.brightness || settings.contrast)
     ADD("eq=brightness=%.2f:contrast=%.2f", settings.brightness / 100.0, 1 + settings.contrast / 50.0);
   switch (settings.filter) {
-    case FILTER_SHARPEN: ADD("unsharp=5:5:0.7:3:3:0"); break;
+    case FILTER_SHARPEN: ADD("unsharp=5:5:0.6"); break;
     case FILTER_WARM: ADD("lutyuv=u=val-7:v=val+9"); break;
     case FILTER_COOL: ADD("lutyuv=u=val+9:v=val-6"); break;
-    case FILTER_BW: ADD("lutyuv=u=128:v=128,noise=c0s=6:c0f=t+u"); break;
+    case FILTER_BW: ADD("lutyuv=u=128:v=128,noise=c0s=5:c0f=t"); break;
     case FILTER_CRT: ADD("scale=-2:'min(ih,288)':flags=bilinear,eq=saturation=1.25:contrast=1.08"); break;
   }
   #undef ADD
