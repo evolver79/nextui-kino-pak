@@ -49,7 +49,7 @@ static int folder_count = -1;
 static Uint32 last_save;
 
 // Jellyfin browsing: jf_mode lists jitems (mirrored into items for the shared list code); jstack = where we came from.
-typedef struct { char id[40], type[24], name[160]; int cursor; } JfLevel;
+typedef struct { char id[40], type[32], name[160]; int cursor; } JfLevel;
 static int jf_mode, jf_depth, jf_loading, jf_playing;
 static JfLevel jstack[MAXDEPTH];
 static JfItem *jitems, playing_jf;
@@ -60,9 +60,16 @@ static SDL_Thread *job_th;
 static SDL_atomic_t job_done;
 static int job_kind, job_result, job_n;
 static JfItem *job_items;
-static char job_id[40], job_type[24], jf_code[16], jf_server[256], connect_msg[160];
+static char job_id[40], job_type[32], jf_code[16], jf_server[256], connect_msg[160];
 static Uint32 next_poll;
-static int shots_mode;   // headless screens: no Jellyfin row (no network)
+static int shots_mode;
+// Poster grid (Jellyfin films and series): 5 x 2 covers; textures for the covers in view, by url.
+#define GCOLS 5
+#define GPAGE 10
+static int jf_grid;
+typedef struct { char url[600]; SDL_Texture *t; Uint32 used; } PosterTex;
+static PosterTex ptex[32];
+static Uint32 ptick;   // headless screens: no Jellyfin row (no network)
 
 static const char *VIDEO_EXT[] = { "mp4", "mkv", "avi", "m4v", "webm", "mov", "ts", "m2ts", "mpg", "mpeg", "wmv", "flv",
                                    "3gp", "ogv", "vob", NULL };
@@ -125,6 +132,16 @@ static int count_dir(const char *path) {
 
 // --- browsing -------------------------------------------------------------------------------------------------
 static void want_media(void) {
+  if (!(jf_mode && jf_grid)) media_want_posters(NULL, 0);
+  if (jf_mode && jf_grid) {   // the covers in view, then the next page
+    static char buf[GPAGE * 2][600]; const char *urls[GPAGE * 2]; int n = 0;
+    for (int i = top; i < nitems && i < top + GPAGE * 2; i++) {
+      jf_poster_url(&jitems[i], POSTER_W, POSTER_H, buf[n], sizeof buf[n]); urls[n] = buf[n]; n++;
+    }
+    media_want(NULL, NULL, 0);
+    media_want_posters(urls, n);
+    return;
+  }
   if (jf_mode) {   // the detail card's picture comes from the server (FFmpeg decodes the JPEG)
     char url[600] = "";
     if (cursor < nitems) jf_image_url(&jitems[cursor], THUMB_W, THUMB_H, url, sizeof url);
@@ -144,8 +161,15 @@ static void want_media(void) {
 
 static void set_cursor(int c) {
   cursor = c < 0 ? 0 : c >= nitems ? (nitems ? nitems - 1 : 0) : c;
-  if (cursor < top) top = cursor;
-  if (cursor >= top + ROWS) top = cursor - ROWS + 1;
+  if (jf_mode && jf_grid) {   // the grid scrolls a row of 5 at a time
+    int row = cursor / GCOLS, toprow = top / GCOLS;
+    if (row < toprow) toprow = row;
+    if (row > toprow + 1) toprow = row - 1;
+    top = toprow * GCOLS;
+  } else {
+    if (cursor < top) top = cursor;
+    if (cursor >= top + ROWS) top = cursor - ROWS + 1;
+  }
   want_media();
 }
 
@@ -209,12 +233,17 @@ static void jf_show(JfItem *list, int n) {   // the listed items become the brow
     else snprintf(items[i].name, sizeof items[i].name, "%s", it->name);
     items[i].dir = it->folder;
   }
+  // Films, series and collections as a poster grid; everything else (seasons, episodes, home videos) as rows.
+  jf_grid = nitems > 0;
+  for (int i = 0; i < nitems; i++)
+    if (strcmp(jitems[i].type, "Movie") && strcmp(jitems[i].type, "Series") && strcmp(jitems[i].type, "BoxSet")) jf_grid = 0;
   top = 0;
-  set_cursor(jf_depth ? 0 : 0);
+  set_cursor(0);
 }
 
 static void jf_open(const char *id, const char *type, const char *name) {   // list a level (id "" = libraries)
   if (jf_depth + 1 >= MAXDEPTH) return;
+  jf_grid = 0;
   JfLevel *l = &jstack[jf_depth];
   snprintf(l->id, sizeof l->id, "%s", id); snprintf(l->type, sizeof l->type, "%s", type);
   snprintf(l->name, sizeof l->name, "%s", name);
@@ -237,7 +266,7 @@ static void jf_enter(void) {   // from the SD card root
 
 static void jf_leave_level(void) {
   if (jf_depth == 0) {   // back to the SD card
-    jf_mode = 0; free(jitems); jitems = NULL;
+    jf_mode = 0; jf_grid = 0; free(jitems); jitems = NULL;
     list_dir();
     return;
   }
@@ -402,7 +431,7 @@ static void jf_label(const JfItem *it, char *out, size_t n) {   // "S1 · E3 · 
     { if (it->year) snprintf(out, n, "%d%s%s", it->year, *len ? " · " : "", len); else snprintf(out, n, "%s", len); }
   else if (!strcmp(it->type, "Series")) snprintf(out, n, it->unplayed ? "Series · %d new" : "Series", it->unplayed);
   else if (!strcmp(it->type, "Season")) snprintf(out, n, it->unplayed ? "Season · %d new" : "Season", it->unplayed);
-  else if (!strcmp(it->type, "CollectionFolder") || !strcmp(it->type, "UserView")) snprintf(out, n, "Library");
+  else if (!strncmp(it->type, "CollectionFolder", 16) || !strcmp(it->type, "UserView")) snprintf(out, n, "Library");
   else snprintf(out, n, "%s", it->folder ? "Folder" : len);
 }
 
@@ -477,9 +506,49 @@ static void draw_detail(void) {
   dot_progress(dot, 70, 590, 400, st == RES_SEEN ? 1 : st == RES_PARTIAL && dur > 0 ? (float)(pos / dur) : 0, 0);
 }
 
+static SDL_Texture *poster_tex(const char *url) {   // the cover's texture once the worker has it
+  PosterTex *free_slot = &ptex[0];
+  for (int i = 0; i < 32; i++) {
+    if (ptex[i].t && !strcmp(ptex[i].url, url)) { ptex[i].used = ++ptick; return ptex[i].t; }
+    if (!ptex[i].t || ptex[i].used < free_slot->used) free_slot = &ptex[i];
+  }
+  const uint8_t *rgb;
+  if (!media_poster(url, &rgb)) return NULL;
+  if (!free_slot->t) free_slot->t = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STATIC, POSTER_W, POSTER_H);
+  SDL_UpdateTexture(free_slot->t, NULL, rgb, POSTER_W * 3);
+  snprintf(free_slot->url, sizeof free_slot->url, "%s", url);
+  free_slot->used = ++ptick;
+  return free_slot->t;
+}
+
+static void draw_grid(void) {   // 5 x 2 covers; the focused one's name in the header
+  JfItem *f = &jitems[cursor];
+  char label[96], lab[64];
+  jf_label(f, lab, sizeof lab);
+  snprintf(label, sizeof label, "%s%s%d / %d", lab, *lab ? " · " : "", cursor + 1, nitems);
+  int lw = dot_text_w(dot, DOT_LABEL_T, label);
+  dot_text(dot, DOT_TITLE, f->name, 40, 22, 0x161616, DOT_LEFT, 944 - lw - 40);
+  dot_text(dot, DOT_LABEL_T, label, 984, 30, 0x161616, DOT_RIGHT, 0);
+  for (int i = top; i < nitems && i < top + GPAGE; i++) {
+    JfItem *it = &jitems[i];
+    char url[600]; jf_poster_url(it, POSTER_W, POSTER_H, url, sizeof url);
+    int x = 40 + (i - top) % GCOLS * (POSTER_W + 16), y = 96 + (i - top) / GCOLS * (POSTER_H + 16);
+    float prog = !it->folder && !it->played && it->pos > 0 && it->runtime > 0 ? (float)(it->pos / it->runtime) : 0;
+    dot_poster(dot, poster_tex(url), x, y, POSTER_W, POSTER_H, i == cursor, prog, it->played, it->folder && it->unplayed > 0);
+  }
+  DotHint h[4]; int n = 0;
+  if (f->folder) h[n++] = (DotHint){ "A", "Open" };
+  else h[n++] = (DotHint){ "A", f->pos > 0 && !f->played ? "Resume" : "Play" };
+  h[n++] = (DotHint){ "L1 R1", "Page" };
+  h[n++] = (DotHint){ "B", "Back" };
+  h[n++] = (DotHint){ "Y", "Options" };
+  dot_dock(dot, h, n);
+}
+
 static void draw_browse(void) {
   dot_set_ground(dot, settings.ground ? DOT_GROUND_TOPCENTRE : DOT_GROUND_TOPLEFT);
   dot_ground(dot);
+  if (jf_mode && jf_grid && !jf_loading && nitems) { draw_grid(); return; }
   // Crumb: "SD card / Videos / ...", only the last two folders when it's deeper than that.
   char crumb[700] = "SD card / Videos", count[32], rel[1100];
   if (jf_mode) {   // "Jellyfin / Shows / Northern"
@@ -773,6 +842,16 @@ static void on_button(int b) {
     }
     return;
   }
+  if (jf_mode && jf_grid && !jf_loading && nitems) {   // the grid: d-pad in 2D, L1/R1 a page of 10
+    switch (b) {
+      case BTN_LEFT: if (cursor) set_cursor(cursor - 1); return;
+      case BTN_RIGHT: if (cursor + 1 < nitems) set_cursor(cursor + 1); return;
+      case BTN_UP: if (cursor >= GCOLS) set_cursor(cursor - GCOLS); return;
+      case BTN_DOWN: if (cursor + GCOLS < nitems) set_cursor(cursor + GCOLS); else if (cursor / GCOLS < (nitems - 1) / GCOLS) set_cursor(nitems - 1); return;
+      case BTN_L1: set_cursor(cursor - GPAGE); return;
+      case BTN_R1: set_cursor(cursor + GPAGE); return;
+    }
+  }
   switch (b) {
     case BTN_UP: if (nitems) set_cursor(cursor ? cursor - 1 : nitems - 1); break;
     case BTN_DOWN: if (nitems) set_cursor(cursor + 1 < nitems ? cursor + 1 : 0); break;
@@ -857,6 +936,26 @@ static void shots(const char *out) {
   toast_until = 0; open_options(); opt_sel = O_ASPECT; shot(out, "options");
   screen = SCR_CONNECT; snprintf(jf_code, sizeof jf_code, "722223");
   snprintf(connect_msg, sizeof connect_msg, "http://192.168.68.152:8096"); shot(out, "jellyfin-connect");
+  if (!jf_logged_in()) return;
+  // With a login in the user folder: the real libraries, the first grid, and a series opened.
+  screen = SCR_BROWSE; jf_enter();
+  for (int t = 0; t < 400 && (job_th || jf_loading); t++) { SDL_Delay(25); if (job_th && SDL_AtomicGet(&job_done)) job_finished(); }
+  wait_media(); shot(out, "jf-libraries");
+  for (int lib = 0, nlib = nitems; lib < nlib && lib < 4; lib++) {
+    if (lib) { jf_leave_level(); for (int t = 0; t < 400 && (job_th || jf_loading); t++) { SDL_Delay(25); if (job_th && SDL_AtomicGet(&job_done)) job_finished(); } }
+    set_cursor(lib); on_button(BTN_A);
+    for (int t = 0; t < 400 && (job_th || jf_loading); t++) { SDL_Delay(25); if (job_th && SDL_AtomicGet(&job_done)) job_finished(); }
+    if (jf_grid) {
+      set_cursor(1);
+      for (int t = 0; t < 300; t++) {   // until the covers in view are in
+        int all = 1; const uint8_t *rgb;
+        for (int i = top; i < nitems && i < top + GPAGE; i++) { char u[600]; jf_poster_url(&jitems[i], POSTER_W, POSTER_H, u, sizeof u); all &= media_poster(u, &rgb); }
+        if (all) break;
+        SDL_Delay(50);
+      }
+      char nm[32]; snprintf(nm, sizeof nm, "jf-grid-%d", lib); shot(out, nm);
+    }
+  }
 }
 
 // --- main -----------------------------------------------------------------------------------------------------
@@ -959,6 +1058,7 @@ int main(int argc, char **argv) {
   store_save();
   media_stop();
   if (thumb_tex) SDL_DestroyTexture(thumb_tex);
+  for (int i = 0; i < 32; i++) if (ptex[i].t) SDL_DestroyTexture(ptex[i].t);
   if (crt_tex) SDL_DestroyTexture(crt_tex);
   dot_quit(dot);
   player_quit();

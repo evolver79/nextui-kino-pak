@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 typedef struct {
-  char id[40], name[160], type[24];   // type: CollectionFolder, Movie, Series, Season, Episode, Folder, BoxSet, ...
+  char id[40], name[160], type[32];   // Movie, Series, Season, Episode, Folder, BoxSet, CollectionFolder:movies, ...
   char series[120];                   // episodes: the series name
   int folder;                         // has children
   int year, index, season;            // production year; episode / season numbers
@@ -27,6 +27,7 @@ int jf_qc_poll(void);                              // 1 approved and logged in (
 int jf_views(JfItem **out);                        // the user's libraries; returns the count (-1 on error)
 int jf_children(const char *parent_id, const char *parent_type, JfItem **out);
 void jf_stream_url(const JfItem *it, char *out, size_t n);
+void jf_poster_url(const JfItem *it, int w, int h, char *out, size_t n);   // 2:3 cover for the grid
 void jf_image_url(const JfItem *it, int w, int h, char *out, size_t n);   // 16:9 picture for the detail card
 // Playback reports: what 0 = started, 1 = progress, 2 = stopped. Runs on its own thread, returns at once.
 void jf_report(int what, const char *item_id, double pos, int paused);

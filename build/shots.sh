@@ -6,6 +6,8 @@ cd "$(dirname "$0")/.."
 build/build.sh >/dev/null
 O=build/out/shots
 rm -rf $O && mkdir -p "$O/videos/Films" "$O/videos/Series/Northern" "$O/user"
+# A Jellyfin login (copied from the Brick, never committed) adds shots of the real libraries and grid.
+[ -f build/out/jfuser/jellyfin.txt ] && cp build/out/jfuser/jellyfin.txt "$O/user/"
 ln -s ../../../../../test/hevc-1080p.mkv "$O/videos/Films/The Long Harbour.mkv"
 ln -s ../../../../../test/h264-720p.mp4 "$O/videos/Films/Rally Highlights.mp4"
 i=1; for f in h264-480p.mp4 h264-720p.mp4 hevc-720p.mkv h264-1080p.mp4 hevc-1080p.mkv; do

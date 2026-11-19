@@ -28,6 +28,7 @@ int player_init(SDL_Renderer *r, int audio) {
   if (!mpv) return -1;
   mpv_set_option_string(mpv, "vo", "libmpv");
   mpv_set_option_string(mpv, "ao", audio ? "sdl" : "null");
+  mpv_set_option_string(mpv, "audio-channels", "stereo");   // the Brick has stereo only: 5.1 would fail to open
   mpv_set_option_string(mpv, "idle", "yes");
   mpv_set_option_string(mpv, "hwdec", "no");
   mpv_set_option_string(mpv, "vd-lavc-threads", "4");

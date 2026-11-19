@@ -171,6 +171,8 @@ static int items_from(cJSON *arr, JfItem **out) {
     snprintf(it->id, sizeof it->id, "%s", jstr(o, "Id"));
     snprintf(it->name, sizeof it->name, "%s", jstr(o, "Name"));
     snprintf(it->type, sizeof it->type, "%s", jstr(o, "Type"));
+    if (*jstr(o, "CollectionType"))   // libraries carry their kind: "CollectionFolder:movies", ":tvshows", ...
+      snprintf(it->type, sizeof it->type, "CollectionFolder:%.7s", jstr(o, "CollectionType"));
     snprintf(it->series, sizeof it->series, "%s", jstr(o, "SeriesName"));
     it->folder = jbool(o, "IsFolder");
     it->year = (int)jnum(o, "ProductionYear");
@@ -204,7 +206,14 @@ int jf_views(JfItem **out) {
 
 int jf_children(const char *parent_id, const char *parent_type, JfItem **out) {
   int episodes = !strcmp(parent_type, "Season") || !strcmp(parent_type, "Series");
-  char p[400];
+  char p[500];
+  // Film and series libraries: every film / series in them (as the Jellyfin apps show), not the raw folders.
+  const char *kind = strstr(parent_type, ":movies") ? "Movie" : strstr(parent_type, ":tvshow") ? "Series" : NULL;
+  if (kind) {
+    snprintf(p, sizeof p, "/Users/%s/Items?ParentId=%s&Recursive=true&IncludeItemTypes=%s&Fields=BackdropImageTags,"
+             "ProductionYear&SortBy=SortName&SortOrder=Ascending&Limit=2000", user_id, parent_id, kind);
+    return list(p, out);
+  }
   snprintf(p, sizeof p, "/Users/%s/Items?ParentId=%s&Fields=Overview,BackdropImageTags,SeriesName,ProductionYear"
            "&SortBy=%s&SortOrder=Ascending&Limit=1000", user_id, parent_id,
            episodes ? "ParentIndexNumber,IndexNumber,SortName" : "IsFolder,SortName");
@@ -214,6 +223,10 @@ int jf_children(const char *parent_id, const char *parent_type, JfItem **out) {
 void jf_stream_url(const JfItem *it, char *out, size_t n) {
   snprintf(out, n, "%s/Videos/%s/stream?static=true&MediaSourceId=%s&DeviceId=%s&api_key=%s", server, it->id, it->id,
            device_id, token);
+}
+
+void jf_poster_url(const JfItem *it, int w, int h, char *out, size_t n) {
+  snprintf(out, n, "%s/Items/%s/Images/Primary?fillWidth=%d&fillHeight=%d&quality=85", server, it->id, w, h);
 }
 
 void jf_image_url(const JfItem *it, int w, int h, char *out, size_t n) {

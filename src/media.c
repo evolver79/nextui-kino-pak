@@ -13,11 +13,12 @@
 #include <sys/stat.h>
 
 #define MCAP 2048
-#define THUMBS_IN_MEMORY 24
+#define THUMBS_IN_MEMORY 48   // detail-card pictures and posters
+#define NPOSTERS 24
 #define NWANT 8
 #define DEFAULT_ACCENT 0xff6a2b
 
-typedef struct { char *path; MediaInfo info; uint8_t *rgb; Uint32 accent; int thumb; Uint32 used; } MEnt;
+typedef struct { char *path; MediaInfo info; uint8_t *rgb; Uint32 accent; int thumb, pw, ph; Uint32 used; } MEnt;
 static MEnt ents[MCAP];
 static int nents;
 static Uint32 tick;
@@ -25,7 +26,8 @@ static SDL_mutex *mx;
 static SDL_cond *cv;
 static SDL_Thread *thread;
 static int quitting;
-static char want_thumb[1024], want_info[NWANT][1024];
+static char want_thumb[1024], want_info[NWANT][1024], want_poster[NPOSTERS][600];
+static int nposter;
 static int nwant;
 static char dir[1024];
 
@@ -53,25 +55,25 @@ static void codec_label(enum AVCodecID id, char *out, size_t n) {
   for (char *p = out; *p; p++) *p = toupper((unsigned char)*p);
 }
 
-static void scale_cover(AVFrame *f, uint8_t *dst) {
-  // Scale to cover THUMB_W x THUMB_H (display aspect kept), then cut the middle out.
+static void scale_cover(AVFrame *f, uint8_t *dst, int TW, int TH) {
+  // Scale to cover TW x TH (display aspect kept), then cut the middle out.
   double sar = f->sample_aspect_ratio.num > 0 ? av_q2d(f->sample_aspect_ratio) : 1;
-  double aspect = f->width * sar / f->height, want = (double)THUMB_W / THUMB_H;
-  int sw = aspect > want ? (int)(THUMB_H * aspect + .5) : THUMB_W, sh = aspect > want ? THUMB_H : (int)(THUMB_W / aspect + .5);
-  sw = sw < THUMB_W ? THUMB_W : sw; sh = sh < THUMB_H ? THUMB_H : sh;
+  double aspect = f->width * sar / f->height, want = (double)TW / TH;
+  int sw = aspect > want ? (int)(TH * aspect + .5) : TW, sh = aspect > want ? TH : (int)(TW / aspect + .5);
+  sw = sw < TW ? TW : sw; sh = sh < TH ? TH : sh;
   struct SwsContext *sws = sws_getContext(f->width, f->height, f->format, sw, sh, AV_PIX_FMT_RGB24, SWS_BILINEAR, NULL, NULL, NULL);
   if (!sws) return;
   uint8_t *tmp = malloc((size_t)sw * sh * 3);
   uint8_t *dp[4] = { tmp }; int dl[4] = { sw * 3 };
   sws_scale(sws, (const uint8_t *const *)f->data, f->linesize, 0, f->height, dp, dl);
   sws_freeContext(sws);
-  int ox = (sw - THUMB_W) / 2, oy = (sh - THUMB_H) / 2;
-  for (int y = 0; y < THUMB_H; y++) memcpy(dst + y * THUMB_W * 3, tmp + ((y + oy) * sw + ox) * 3, THUMB_W * 3);
+  int ox = (sw - TW) / 2, oy = (sh - TH) / 2;
+  for (int y = 0; y < TH; y++) memcpy(dst + y * TW * 3, tmp + ((y + oy) * sw + ox) * 3, TW * 3);
   free(tmp);
 }
 
 // Facts, and with rgb != NULL a picture from 10% in (at most 5 minutes in).
-static void probe(const char *path, MediaInfo *mi, uint8_t **rgb) {
+static void probe(const char *path, MediaInfo *mi, uint8_t **rgb, int TW, int TH) {
   memset(mi, 0, sizeof *mi);
   mi->known = -1;
   AVFormatContext *fc = NULL;
@@ -105,7 +107,7 @@ static void probe(const char *path, MediaInfo *mi, uint8_t **rgb) {
         av_packet_unref(pkt);
       }
       if (!got) { avcodec_send_packet(cc, NULL); got = avcodec_receive_frame(cc, f) == 0; }
-      if (got) { *rgb = calloc(THUMB_W * THUMB_H, 3); scale_cover(f, *rgb); }
+      if (got) { *rgb = calloc(TW * TH, 3); scale_cover(f, *rgb, TW, TH); }
       av_frame_free(&f); av_packet_free(&pkt);
     }
     avcodec_free_context(&cc);
@@ -138,10 +140,10 @@ Uint32 media_accent_of(const uint8_t *px, int w, int h, int pitch, int bgrx) {
 }
 
 // --- disk cache -----------------------------------------------------------------------------------------------
-static void thumb_file(const char *path, char *out, size_t n) {
+static void thumb_file(const char *path, int w, int h, char *out, size_t n) {
   struct stat st; Uint32 k = 0;
   if (stat(path, &st) == 0) k = (Uint32)st.st_mtime ^ (Uint32)st.st_size;
-  snprintf(out, n, "%s/thumbs/%08x%08x.rgb", dir, fnv(path, 2166136261u), k);
+  snprintf(out, n, "%s/thumbs/%08x%08x-%dx%d.rgb", dir, fnv(path, 2166136261u), k, w, h);
 }
 
 static void info_load(void) {
@@ -172,7 +174,12 @@ static int worker(void *u) {
   SDL_LockMutex(mx);
   while (!quitting) {
     char job[1024]; int kind = 0;
+    int pw = THUMB_W, ph = THUMB_H;
     if (want_thumb[0]) { MEnt *e = find(want_thumb); if (!e || !e->thumb) { snprintf(job, sizeof job, "%s", want_thumb); kind = 2; } }
+    for (int i = 0; !kind && i < nposter; i++) {
+      MEnt *e = find(want_poster[i]);
+      if (!e || !e->thumb) { snprintf(job, sizeof job, "%s", want_poster[i]); kind = 2; pw = POSTER_W; ph = POSTER_H; }
+    }
     for (int i = 0; !kind && i < nwant; i++) {
       MEnt *e = find(want_info[i]);
       if (!e || !e->info.known) { snprintf(job, sizeof job, "%s", want_info[i]); kind = 1; }
@@ -184,17 +191,17 @@ static int worker(void *u) {
 
     MediaInfo mi = { 0 }; uint8_t *rgb = NULL; Uint32 acc = DEFAULT_ACCENT;
     char tf[1200]; FILE *f = NULL;
-    if (kind == 2) { thumb_file(job, tf, sizeof tf); f = fopen(tf, "rb"); }
-    if (f) {   // thumbnail from the disk cache
-      rgb = malloc(THUMB_W * THUMB_H * 3);
-      if (fread(&acc, 4, 1, f) != 1 || fread(rgb, THUMB_W * THUMB_H * 3, 1, f) != 1) { free(rgb); rgb = NULL; }
+    if (kind == 2) { thumb_file(job, pw, ph, tf, sizeof tf); f = fopen(tf, "rb"); }
+    if (f) {   // picture from the disk cache
+      rgb = malloc(pw * ph * 3);
+      if (fread(&acc, 4, 1, f) != 1 || fread(rgb, pw * ph * 3, 1, f) != 1) { free(rgb); rgb = NULL; }
       fclose(f);
     }
     if (need_info || (kind == 2 && !rgb)) {
-      probe(job, &mi, kind == 2 && !rgb ? &rgb : NULL);
+      probe(job, &mi, kind == 2 && !rgb ? &rgb : NULL, pw, ph);
       if (kind == 2 && rgb && mi.known == 1) {
-        acc = media_accent_of(rgb, THUMB_W, THUMB_H, THUMB_W * 3, 0);
-        if ((f = fopen(tf, "wb"))) { fwrite(&acc, 4, 1, f); fwrite(rgb, THUMB_W * THUMB_H * 3, 1, f); fclose(f); }
+        acc = media_accent_of(rgb, pw, ph, pw * 3, 0);
+        if ((f = fopen(tf, "wb"))) { fwrite(&acc, 4, 1, f); fwrite(rgb, pw * ph * 3, 1, f); fclose(f); }
       }
     }
 
@@ -202,7 +209,7 @@ static int worker(void *u) {
     MEnt *e = get(job);
     if (e) {
       if (need_info) { e->info = mi; if (mi.known == 1) info_append(job, &mi); }
-      if (kind == 2) { e->rgb = rgb; e->accent = acc; e->thumb = rgb ? 1 : -1; e->used = tick; }
+      if (kind == 2) { e->rgb = rgb; e->accent = acc; e->thumb = rgb ? 1 : -1; e->used = tick; e->pw = pw; e->ph = ph; }
       else free(rgb);
       if (e->info.known == -1 && kind == 2) e->thumb = -1;
     } else free(rgb);
@@ -234,6 +241,7 @@ void media_want(const char *thumb_path, const char **info_paths, int n) {
   nwant = n < NWANT ? n : NWANT;
   for (int i = 0; i < nwant; i++) snprintf(want_info[i], sizeof want_info[i], "%s", info_paths[i]);
   if (want_thumb[0]) { MEnt *e = find(want_thumb); if (e) e->used = tick; }
+  for (int i = 0; i < nposter; i++) { MEnt *e = find(want_poster[i]); if (e) e->used = tick; }
   // Keep at most THUMBS_IN_MEMORY pictures; the oldest go (they come back from disk quickly).
   int held = 0;
   for (int i = 0; i < nents; i++) held += ents[i].rgb != NULL;
@@ -244,6 +252,26 @@ void media_want(const char *thumb_path, const char **info_paths, int n) {
   }
   SDL_CondSignal(cv);
   SDL_UnlockMutex(mx);
+}
+
+void media_want_posters(const char **urls, int n) {
+  SDL_LockMutex(mx);
+  nposter = n < NPOSTERS ? n : NPOSTERS;
+  for (int i = 0; i < nposter; i++) {
+    snprintf(want_poster[i], sizeof want_poster[i], "%s", urls[i]);
+    MEnt *e = find(want_poster[i]); if (e) e->used = tick;
+  }
+  SDL_CondSignal(cv);
+  SDL_UnlockMutex(mx);
+}
+
+int media_poster(const char *url, const uint8_t **rgb) {
+  SDL_LockMutex(mx);
+  MEnt *e = find(url);
+  int ok = e && e->rgb && e->pw == POSTER_W;
+  if (ok) *rgb = e->rgb;
+  SDL_UnlockMutex(mx);
+  return ok;
 }
 
 int media_info(const char *path, MediaInfo *out) {
@@ -258,7 +286,7 @@ int media_info(const char *path, MediaInfo *out) {
 int media_thumb(const char *path, const uint8_t **rgb, Uint32 *accent) {
   SDL_LockMutex(mx);
   MEnt *e = find(path);
-  int ok = e && e->rgb;
+  int ok = e && e->rgb && e->pw == THUMB_W;
   if (ok) { *rgb = e->rgb; *accent = e->accent; }
   SDL_UnlockMutex(mx);
   return ok;

@@ -7,6 +7,8 @@
 #define H 768
 #define THUMB_W 428
 #define THUMB_H 240
+#define POSTER_W 176   // Jellyfin poster grid (Dot: DOT_POSTER_W/H)
+#define POSTER_H 264
 
 // --- media.c: file facts and thumbnails, worked out with FFmpeg on a background thread --------------------------
 typedef struct {
@@ -24,6 +26,9 @@ void media_want(const char *thumb_path, const char **info_paths, int n);
 int media_info(const char *path, MediaInfo *out);                    // 1 when known (out filled)
 // The thumbnail as an RGB24 THUMB_W x THUMB_H picture and its accent colour. Returns 1 when ready.
 int media_thumb(const char *path, const uint8_t **rgb, Uint32 *accent);
+// Posters for the grid (POSTER_W x POSTER_H, RGB24): the visible ones first, then the next page.
+void media_want_posters(const char **urls, int n);
+int media_poster(const char *url, const uint8_t **rgb);
 Uint32 media_accent_of(const uint8_t *px, int w, int h, int pitch, int bgrx);   // vivid dominant colour (RGB24 or BGRX)
 void media_label(const MediaInfo *m, char *out, size_t n);         // "720P · HEVC · MKV"
 void media_audio_label(const MediaInfo *m, char *out, size_t n);   // "1080P · 5.1"
