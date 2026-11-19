@@ -1,0 +1,7 @@
+deps/*.tar.*
+build/out/
+dist/
+test/
+Kino.pak/kino
+Kino.pak/lib/
+.DS_Store
