@@ -338,6 +338,8 @@ static void select_path(const char *path) {   // put the cursor on this file if 
 static void show_toast(const char *s) { snprintf(toast, sizeof toast, "%s", s); toast_until = SDL_GetTicks() + 2600; }
 
 static void play(int i, int from_start) {
+  media_want(NULL, NULL, 0);    // nothing in the background while a film plays: covers and pictures
+  media_want_posters(NULL, 0);  // compete for the Wi-Fi and the CPU (they come back in the browser)
   if (jf_mode) {
     playing_jf = jitems[i]; jf_playing = 1;
     jf_stream_url(&playing_jf, playing, sizeof playing);
