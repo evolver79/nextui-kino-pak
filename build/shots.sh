@@ -10,6 +10,10 @@ rm -rf $O && mkdir -p "$O/videos/Films" "$O/videos/Series/Northern" "$O/user"
 [ -f build/out/jfuser/jellyfin.txt ] && cp build/out/jfuser/jellyfin.txt "$O/user/"
 ln -s ../../../../../test/hevc-1080p.mkv "$O/videos/Films/The Long Harbour.mkv"
 ln -s ../../../../../test/h264-720p.mp4 "$O/videos/Films/Rally Highlights.mp4"
+ln -s ../../../../../test/hevc-720p.mkv "$O/videos/Films/Glacier Walk.mkv"
+ln -s ../../../../../test/h264-1080p.mp4 "$O/videos/Films/Night Ferry.mp4"
+# A picture next to a film is its cover (here a frame saved as a jpg, to test the lookup).
+ffmpeg -v error -ss 3 -i test/h264-480p.mp4 -frames:v 1 -vf scale=400:600 "$O/videos/Films/Rally Highlights.jpg"
 i=1; for f in h264-480p.mp4 h264-720p.mp4 hevc-720p.mkv h264-1080p.mp4 hevc-1080p.mkv; do
   n=$(echo "Dark Snow Ice Thaw Light" | cut -d' ' -f$i)
   ln -s ../../../../../../test/$f "$O/videos/Series/Northern/Episode $i · $n.${f##*.}"; i=$((i+1))

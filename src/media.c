@@ -26,7 +26,7 @@ static SDL_mutex *mx;
 static SDL_cond *cv;
 static SDL_Thread *thread;
 static int quitting;
-static char want_thumb[1024], want_info[NWANT][1024], want_poster[NPOSTERS][600];
+static char want_thumb[1024], want_info[NWANT][1024], want_poster[NPOSTERS][1024];
 static int nposter;
 static int nwant;
 static char dir[1024];
@@ -115,6 +115,93 @@ static void probe(const char *path, MediaInfo *mi, uint8_t **rgb, int TW, int TH
   avformat_close_input(&fc);
 }
 
+// --- covers made from the video ---------------------------------------------------------------------------------
+// "frame:<path>": four frames spread through the film; the busiest, most colourful one that isn't dark is kept.
+// The cover is that frame whole, across the middle, on a blurred and darkened copy of itself.
+static double frame_score(AVFrame *f) {
+  uint8_t px[32 * 18 * 3];
+  scale_cover(f, px, 32, 18);
+  double sum = 0, sum2 = 0, sat = 0;
+  for (int i = 0; i < 32 * 18; i++) {
+    const uint8_t *p = px + i * 3;
+    double l = .299 * p[0] + .587 * p[1] + .114 * p[2];
+    int mxc = p[0] > p[1] ? (p[0] > p[2] ? p[0] : p[2]) : (p[1] > p[2] ? p[1] : p[2]);
+    int mnc = p[0] < p[1] ? (p[0] < p[2] ? p[0] : p[2]) : (p[1] < p[2] ? p[1] : p[2]);
+    sum += l; sum2 += l * l; sat += mxc - mnc;
+  }
+  double n = 32 * 18, mean = sum / n, sd = sqrt(fmax(0, sum2 / n - mean * mean));
+  double score = sd + sat / n * .5;
+  if (mean < 35) score *= mean / 35;    // black screens and fades
+  if (mean > 225) score *= .3;          // white title cards
+  return score;
+}
+
+static void blur_dark(const uint8_t *src, int sw, int sh, uint8_t *dst, int w, int h, double dim) {   // bilinear up
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++) {
+      double fx = (x + .5) * sw / w - .5, fy = (y + .5) * sh / h - .5;
+      int x0 = fx < 0 ? 0 : (int)fx, y0 = fy < 0 ? 0 : (int)fy, x1 = x0 + 1 < sw ? x0 + 1 : x0, y1 = y0 + 1 < sh ? y0 + 1 : y0;
+      double ax = fx - x0, ay = fy - y0; if (ax < 0) ax = 0; if (ay < 0) ay = 0;
+      for (int c = 0; c < 3; c++) {
+        double v = (src[(y0 * sw + x0) * 3 + c] * (1 - ax) + src[(y0 * sw + x1) * 3 + c] * ax) * (1 - ay)
+                 + (src[(y1 * sw + x0) * 3 + c] * (1 - ax) + src[(y1 * sw + x1) * 3 + c] * ax) * ay;
+        dst[(y * w + x) * 3 + c] = (uint8_t)(v * dim);
+      }
+    }
+}
+
+static uint8_t *frame_cover(const char *path, int W_, int H_) {
+  AVFormatContext *fc = NULL;
+  if (avformat_open_input(&fc, path, NULL, NULL) < 0) return NULL;
+  uint8_t *out = NULL;
+  const AVCodec *dec = NULL;
+  int vs = avformat_find_stream_info(fc, NULL) < 0 ? -1 : av_find_best_stream(fc, AVMEDIA_TYPE_VIDEO, -1, -1, &dec, 0);
+  AVCodecContext *cc = vs >= 0 && dec ? avcodec_alloc_context3(dec) : NULL;
+  if (cc) {
+    avcodec_parameters_to_context(cc, fc->streams[vs]->codecpar);
+    cc->thread_count = 2;
+  }
+  if (cc && avcodec_open2(cc, dec, NULL) == 0) {
+    double dur = fc->duration > 0 ? fc->duration / (double)AV_TIME_BASE : 0, best_score = -1;
+    AVFrame *best = NULL, *f = av_frame_alloc();
+    AVPacket *pkt = av_packet_alloc();
+    for (int k = 0; k < 4; k++) {
+      if (dur > 4) av_seek_frame(fc, -1, (int64_t)(dur * (.15 + .2 * k) * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD);
+      else if (k) break;
+      avcodec_flush_buffers(cc);
+      int got = 0;
+      for (int n = 0; n < 400 && !got && av_read_frame(fc, pkt) >= 0; n++) {
+        if (pkt->stream_index == vs && avcodec_send_packet(cc, pkt) >= 0 && avcodec_receive_frame(cc, f) == 0) got = 1;
+        av_packet_unref(pkt);
+      }
+      if (!got) continue;
+      double sc = frame_score(f);
+      if (sc > best_score) { best_score = sc; av_frame_free(&best); best = av_frame_clone(f); }
+      av_frame_unref(f);
+    }
+    if (best) {
+      out = malloc((size_t)W_ * H_ * 3);
+      uint8_t small[16 * 24 * 3];   // the backdrop: the frame filling the cover, tiny, scaled back up dark
+      scale_cover(best, small, 16, 24);
+      blur_dark(small, 16, 24, out, W_, H_, .45);
+      double sar = best->sample_aspect_ratio.num > 0 ? av_q2d(best->sample_aspect_ratio) : 1;
+      int fh = (int)(W_ * best->height / (best->width * sar) + .5);   // the whole frame, full width
+      if (fh > H_) fh = H_;
+      if (fh > 0) {
+        uint8_t *mid = malloc((size_t)W_ * fh * 3);
+        scale_cover(best, mid, W_, fh);
+        memcpy(out + (size_t)(H_ - fh) / 2 * W_ * 3, mid, (size_t)W_ * fh * 3);
+        free(mid);
+      }
+      av_frame_free(&best);
+    }
+    av_frame_free(&f); av_packet_free(&pkt);
+  }
+  avcodec_free_context(&cc);
+  avformat_close_input(&fc);
+  return out;
+}
+
 Uint32 media_accent_of(const uint8_t *px, int w, int h, int pitch, int bgrx) {
   // Hue of the saturated, bright parts (weighted), shown vivid; grey pictures keep the default orange.
   int bpp = bgrx ? 4 : 3;
@@ -142,7 +229,7 @@ Uint32 media_accent_of(const uint8_t *px, int w, int h, int pitch, int bgrx) {
 // --- disk cache -----------------------------------------------------------------------------------------------
 static void thumb_file(const char *path, int w, int h, char *out, size_t n) {
   struct stat st; Uint32 k = 0;
-  if (stat(path, &st) == 0) k = (Uint32)st.st_mtime ^ (Uint32)st.st_size;
+  if (stat(!strncmp(path, "frame:", 6) ? path + 6 : path, &st) == 0) k = (Uint32)st.st_mtime ^ (Uint32)st.st_size;
   snprintf(out, n, "%s/thumbs/%08x%08x-%dx%d.rgb", dir, fnv(path, 2166136261u), k, w, h);
 }
 
@@ -186,7 +273,8 @@ static int worker(void *u) {
     }
     if (!kind) { SDL_CondWait(cv, mx); continue; }
     MEnt *had = find(job);
-    int need_info = !had || !had->info.known;
+    int frame = !strncmp(job, "frame:", 6);   // a cover made from the video (no facts of its own)
+    int need_info = !frame && (!had || !had->info.known);
     SDL_UnlockMutex(mx);
 
     MediaInfo mi = { 0 }; uint8_t *rgb = NULL; Uint32 acc = DEFAULT_ACCENT;
@@ -197,7 +285,13 @@ static int worker(void *u) {
       if (fread(&acc, 4, 1, f) != 1 || fread(rgb, pw * ph * 3, 1, f) != 1) { free(rgb); rgb = NULL; }
       fclose(f);
     }
-    if (need_info || (kind == 2 && !rgb)) {
+    if (frame && !rgb) {
+      rgb = frame_cover(job + 6, pw, ph);
+      if (rgb) {
+        acc = media_accent_of(rgb, pw, ph, pw * 3, 0);
+        if ((f = fopen(tf, "wb"))) { fwrite(&acc, 4, 1, f); fwrite(rgb, pw * ph * 3, 1, f); fclose(f); }
+      }
+    } else if (need_info || (kind == 2 && !rgb)) {
       probe(job, &mi, kind == 2 && !rgb ? &rgb : NULL, pw, ph);
       if (kind == 2 && rgb && mi.known == 1) {
         acc = media_accent_of(rgb, pw, ph, pw * 3, 0);

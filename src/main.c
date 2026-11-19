@@ -25,7 +25,11 @@ enum { O_ASPECT, O_BRIGHT, O_CONTRAST, O_DEINT, O_FILTER, O_SUBS, O_TRACK, O_PRE
 #define ROWS 5
 #define MAXDEPTH 32
 
-typedef struct { char name[256]; int dir, virt; } Item;   // virt: the Jellyfin row at the SD card root
+typedef struct {
+  char name[256]; int dir, virt;   // virt: the Jellyfin row at the SD card root
+  time_t mtime;                    // "Recently added" in a local grid
+  char cover[1100]; int cover_set; // local grid: a picture next to it, "frame:<video>", or "" (worked out once)
+} Item;
 
 static SDL_Renderer *ren;
 static Dot *dot;
@@ -71,7 +75,8 @@ static int shots_mode;
 #define GCOLS 5
 #define GPAGE 10
 static int jf_grid;
-typedef struct { char url[600]; SDL_Texture *t; Uint32 used; } PosterTex;
+static int local_grid;   // an SD card folder of films (not episodes) shown as covers
+typedef struct { char url[1100]; SDL_Texture *t; Uint32 used; } PosterTex;
 static PosterTex ptex[32];
 static Uint32 ptick;   // headless screens: no Jellyfin row (no network)
 
@@ -107,6 +112,11 @@ static int item_cmp(const void *x, const void *y) {
   return a->dir != b->dir ? b->dir - a->dir : natcmp(a->name, b->name);
 }
 
+static int mtime_cmp(const void *x, const void *y) {   // newest first
+  time_t a = ((const Item *)x)->mtime, b = ((const Item *)y)->mtime;
+  return a < b ? 1 : a > b ? -1 : 0;
+}
+
 static int is_video(const char *name) {
   const char *dot_ = strrchr(name, '.');
   if (!dot_) return 0;
@@ -120,7 +130,7 @@ static void title_of(const char *name, char *out, size_t n) {
   for (char *p = out; *p; p++) if (*p == '_') *p = ' ';
 }
 
-static void item_path(int i, char *out, size_t n) { snprintf(out, n, "%s/%s", cwd, items[i].name); }
+static void item_path(int i, char *out, size_t n) { snprintf(out, n, "%s/%.255s", cwd, items[i].name); }
 
 static int count_dir(const char *path) {
   DIR *d = opendir(path); if (!d) return 0;
@@ -134,9 +144,71 @@ static int count_dir(const char *path) {
   return n;
 }
 
+static int file_exists(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISREG(st.st_mode); }
+
+static int looks_episode(const char *n) {   // S01E02, 1x02, "Episode 3", "Ep 3"
+  for (const char *p = n; *p; p++) {
+    if ((*p == 's' || *p == 'S') && isdigit((unsigned char)p[1])) {
+      const char *q = p + 1; while (isdigit((unsigned char)*q)) q++;
+      if ((*q == 'e' || *q == 'E') && isdigit((unsigned char)q[1])) return 1;
+    }
+    if (isdigit((unsigned char)*p) && (p[1] == 'x' || p[1] == 'X') && isdigit((unsigned char)p[2]) && (p == n || !isalnum((unsigned char)p[-1]))) return 1;
+    if (!strncasecmp(p, "episode", 7) || (!strncasecmp(p, "ep", 2) && (p[2] == ' ' || p[2] == '.') && isdigit((unsigned char)p[3]) && (p == n || !isalpha((unsigned char)p[-1])))) return 1;
+  }
+  return 0;
+}
+
+static const char *PICS[] = { "poster.jpg", "folder.jpg", "cover.jpg", "poster.png", "folder.png", "cover.png", NULL };
+static int folder_picture(const char *dir, char *out, size_t n) {
+  for (int i = 0; PICS[i]; i++) { snprintf(out, n, "%s/%s", dir, PICS[i]); if (file_exists(out)) return 1; }
+  return 0;
+}
+
+static void item_path(int i, char *out, size_t n);
+static const char *cover_of(int i) {   // a picture next to the film, else frames from it (folders: their first film)
+  Item *it = &items[i];
+  if (it->cover_set) return it->cover;
+  it->cover_set = 1; it->cover[0] = 0;
+  char p[1100], c[1100]; item_path(i, p, sizeof p);
+  if (it->dir) {
+    if (folder_picture(p, c, sizeof c)) { snprintf(it->cover, sizeof it->cover, "%s", c); return it->cover; }
+    DIR *d = opendir(p); struct dirent *e; char first[256] = "";
+    while (d && (e = readdir(d)))
+      if (e->d_name[0] != '.' && is_video(e->d_name) && (!first[0] || natcmp(e->d_name, first) < 0)) snprintf(first, sizeof first, "%s", e->d_name);
+    if (d) closedir(d);
+    if (first[0]) snprintf(it->cover, sizeof it->cover, "frame:%.900s/%s", p, first);
+    return it->cover;
+  }
+  static const char *SIDE[] = { ".jpg", ".png", "-poster.jpg", "-poster.png", NULL };
+  char base[1100]; snprintf(base, sizeof base, "%s", p);
+  char *dot_ = strrchr(base, '.'); if (dot_) *dot_ = 0;
+  for (int k = 0; SIDE[k]; k++) {
+    snprintf(c, sizeof c, "%.1000s%s", base, SIDE[k]);
+    if (file_exists(c)) { snprintf(it->cover, sizeof it->cover, "%s", c); return it->cover; }
+  }
+  snprintf(it->cover, sizeof it->cover, "frame:%.1090s", p);
+  return it->cover;
+}
+
+static int grid_mode(void) { return jf_mode ? jf_grid : local_grid; }
+static int in_grid(void) { return grid_mode() && nitems && !(jf_mode && jf_loading); }
+
 // --- browsing -------------------------------------------------------------------------------------------------
 static void want_media(void) {
-  if (!(jf_mode && jf_grid)) media_want_posters(NULL, 0);
+  if (!grid_mode()) media_want_posters(NULL, 0);
+  if (!jf_mode && local_grid) {   // the covers in view and the next page; the focused film's facts for the header
+    const char *urls[GPAGE * 2]; int n = 0;
+    for (int i = top; i < nitems && i < top + GPAGE * 2; i++) if (*cover_of(i)) urls[n++] = cover_of(i);
+    media_want_posters(urls, n);
+    char sel[1400] = ""; const char *one[1] = { sel };
+    folder_count = -1;
+    if (cursor < nitems) {
+      item_path(cursor, sel, sizeof sel);
+      if (items[cursor].dir) folder_count = count_dir(sel);
+    }
+    media_want(NULL, one, cursor < nitems && !items[cursor].dir ? 1 : 0);
+    return;
+  }
   if (jf_mode && jf_grid) {   // the covers in view, then the next page
     static char buf[GPAGE * 2][600]; const char *urls[GPAGE * 2]; int n = 0;
     for (int i = top; i < nitems && i < top + GPAGE * 2; i++) {
@@ -165,7 +237,7 @@ static void want_media(void) {
 
 static void set_cursor(int c) {
   cursor = c < 0 ? 0 : c >= nitems ? (nitems ? nitems - 1 : 0) : c;
-  if (jf_mode && jf_grid) {   // the grid scrolls a row of 5 at a time
+  if (grid_mode()) {   // the grid scrolls a row of 5 at a time
     int row = cursor / GCOLS, toprow = top / GCOLS;
     if (row < toprow) toprow = row;
     if (row > toprow + 1) toprow = row - 1;
@@ -190,10 +262,31 @@ static void list_dir(void) {
     if (!dir && !is_video(e->d_name)) continue;
     if (nitems == cap) { cap = cap ? cap * 2 : 64; items = realloc(items, cap * sizeof *items); }
     snprintf(items[nitems].name, sizeof items[nitems].name, "%s", e->d_name);
+    items[nitems].mtime = st.st_mtime; items[nitems].cover_set = 0; items[nitems].virt = 0;
     items[nitems++].dir = dir;
   }
   if (d) closedir(d);
   if (nitems) qsort(items, nitems, sizeof *items, item_cmp);
+  // Films (not episodes, not a tree of folders) as covers: most entries are videos or folders with a picture.
+  local_grid = 0;
+  if (depth > 0 && nitems >= 2) {
+    int films = 0, eps = 0; char p[1400], c[1400];
+    for (int i = 0; i < nitems; i++) {
+      if (looks_episode(items[i].name)) eps++;
+      snprintf(p, sizeof p, "%s/%s", cwd, items[i].name);
+      if (!items[i].dir || folder_picture(p, c, sizeof c)) films++;
+    }
+    local_grid = !eps && films * 2 >= nitems;
+  }
+  if (local_grid && settings.sort == SORT_ADDED) qsort(items, nitems, sizeof *items, mtime_cmp);
+  if (local_grid && settings.sort == SORT_UNWATCHED) {   // seen films leave the view (folders stay)
+    int k = 0;
+    for (int i = 0; i < nitems; i++) {
+      char p[1400]; snprintf(p, sizeof p, "%s/%s", cwd, items[i].name);
+      if (items[i].dir || store_resume(p, NULL, NULL) != RES_SEEN) items[k++] = items[i];
+    }
+    nitems = k;
+  }
   if (!depth && !shots_mode) {   // the SD card root starts with Jellyfin
     items = realloc(items, (nitems + 1) * sizeof *items);
     memmove(items + 1, items, nitems * sizeof *items);
@@ -355,6 +448,16 @@ static void job_finished(void) {
 }
 
 
+
+static void local_sort_next(void) {   // SELECT in a local grid: as in Jellyfin
+  char keep[256] = ""; if (cursor < nitems) snprintf(keep, sizeof keep, "%s", items[cursor].name);
+  settings.sort = (settings.sort + 1) % NSORT;
+  settings_save();
+  list_dir();
+  for (int i = 0; i < nitems; i++) if (!strcmp(items[i].name, keep)) { set_cursor(i); break; }
+  char t[64]; snprintf(t, sizeof t, "Sort · %s", SORT_NAMES[settings.sort]);
+  show_toast(t);
+}
 
 static void enter_dir(void) {
   if (items[cursor].virt) { jf_enter(); return; }
@@ -521,9 +624,11 @@ static void draw_detail(void) {
   if (jf_mode) { draw_detail_jf(); return; }
   dot_card(dot, 40, 96, 460, 528);
   if (!nitems) {
+    int all_seen = local_grid && settings.sort == SORT_UNWATCHED;
     draw_thumb_area(56, 112, "", 1);
-    dot_text(dot, DOT_TITLE, "No videos here", 70, 374, DOT_TEXT, DOT_LEFT, 400);
-    dot_text(dot, DOT_BODY_S, "Put films and series in the Videos folder on the SD card.", 70, 424, DOT_LABEL, DOT_LEFT, 400);
+    dot_text(dot, DOT_TITLE, all_seen ? "All seen" : "No videos here", 70, 374, DOT_TEXT, DOT_LEFT, 400);
+    dot_text(dot, DOT_BODY_S, all_seen ? "Press SELECT to show everything." : "Put films and series in the Videos folder on the SD card.",
+             70, 424, DOT_LABEL, DOT_LEFT, 400);
     return;
   }
   Item *it = &items[cursor];
@@ -575,26 +680,62 @@ static SDL_Texture *poster_tex(const char *url) {   // the cover's texture once 
   return free_slot->t;
 }
 
+static void len_label(double secs, char *out, size_t n) {   // "1h 52m", "44 min"
+  int m = (int)(secs / 60 + .5);
+  if (m >= 60) snprintf(out, n, "%dh %02dm", m / 60, m % 60); else if (m) snprintf(out, n, "%d min", m); else out[0] = 0;
+}
+
 static void draw_grid(void) {   // 5 x 2 covers; the focused one's name in the header
-  JfItem *f = &jitems[cursor];
-  char label[96], lab[64];
-  jf_label(f, lab, sizeof lab);
+  char label[96], lab[64], name[256];
+  int folder, resumable = 0;
+  if (jf_mode) {
+    JfItem *f = &jitems[cursor];
+    jf_label(f, lab, sizeof lab);
+    snprintf(name, sizeof name, "%s", f->name);
+    folder = f->folder; resumable = f->pos > 0 && !f->played;
+  } else {
+    Item *f = &items[cursor];
+    char p[1400]; item_path(cursor, p, sizeof p);
+    folder = f->dir;
+    if (folder) { snprintf(name, sizeof name, "%s", f->name);
+                  snprintf(lab, sizeof lab, folder_count == 1 ? "Folder · 1 item" : folder_count >= 0 ? "Folder · %d items" : "Folder", folder_count); }
+    else {
+      MediaInfo mi; lab[0] = 0;
+      title_of(f->name, name, sizeof name);
+      if (media_info(p, &mi)) {
+        char res[32], len[24]; media_label(&mi, res, sizeof res); *strchr(res, ' ') = 0; len_label(mi.duration, len, sizeof len);
+        snprintf(lab, sizeof lab, "%s%s%s", len, *len ? " · " : "", res);
+      }
+      resumable = store_resume(p, NULL, NULL) == RES_PARTIAL;
+    }
+  }
   snprintf(label, sizeof label, "%s%s%d / %d", lab, *lab ? " · " : "", cursor + 1, nitems);
   int lw = dot_text_w(dot, DOT_LABEL_T, label);
-  dot_text(dot, DOT_TITLE, f->name, 40, 22, 0x161616, DOT_LEFT, 944 - lw - 40);
+  dot_text(dot, DOT_TITLE, name, 40, 22, 0x161616, DOT_LEFT, 944 - lw - 40);
   dot_text(dot, DOT_LABEL_T, label, 984, 30, 0x161616, DOT_RIGHT, 0);
   for (int i = top; i < nitems && i < top + GPAGE; i++) {
-    JfItem *it = &jitems[i];
-    char url[600]; jf_poster_url(it, POSTER_W, POSTER_H, url, sizeof url);
+    char url[1100] = ""; float prog = 0; int seen = 0, fresh = 0;
+    if (jf_mode) {
+      JfItem *it = &jitems[i];
+      jf_poster_url(it, POSTER_W, POSTER_H, url, sizeof url);
+      prog = !it->folder && !it->played && it->pos > 0 && it->runtime > 0 ? (float)(it->pos / it->runtime) : 0;
+      seen = it->played; fresh = it->folder && it->unplayed > 0;
+    } else {
+      snprintf(url, sizeof url, "%s", cover_of(i));
+      if (!items[i].dir) {
+        char p[1400]; double pos, dur; item_path(i, p, sizeof p);
+        int st = store_resume(p, &pos, &dur);
+        seen = st == RES_SEEN; if (st == RES_PARTIAL && dur > 0) prog = (float)(pos / dur);
+      }
+    }
     int x = 40 + (i - top) % GCOLS * (POSTER_W + 16), y = 96 + (i - top) / GCOLS * (POSTER_H + 16);
-    float prog = !it->folder && !it->played && it->pos > 0 && it->runtime > 0 ? (float)(it->pos / it->runtime) : 0;
-    dot_poster(dot, poster_tex(url), x, y, POSTER_W, POSTER_H, i == cursor, prog, it->played, it->folder && it->unplayed > 0);
+    dot_poster(dot, *url ? poster_tex(url) : NULL, x, y, POSTER_W, POSTER_H, i == cursor, prog, seen, fresh);
   }
   DotHint h[4]; int n = 0;
-  if (f->folder) h[n++] = (DotHint){ "A", "Open" };
-  else h[n++] = (DotHint){ "A", f->pos > 0 && !f->played ? "Resume" : "Play" };
+  if (folder) h[n++] = (DotHint){ "A", "Open" };
+  else h[n++] = (DotHint){ "A", resumable ? "Resume" : "Play" };
   h[n++] = (DotHint){ "SELECT", "Sort" };
-  h[n++] = (DotHint){ "B", "Back" };
+  h[n++] = (DotHint){ "B", jf_mode || depth ? "Back" : "Quit" };
   h[n++] = (DotHint){ "Y", "Options" };
   dot_dock(dot, h, n);
 }
@@ -602,7 +743,7 @@ static void draw_grid(void) {   // 5 x 2 covers; the focused one's name in the h
 static void draw_browse(void) {
   dot_set_ground(dot, settings.ground ? DOT_GROUND_TOPCENTRE : DOT_GROUND_TOPLEFT);
   dot_ground(dot);
-  if (jf_mode && jf_grid && !jf_loading && nitems) { draw_grid(); return; }
+  if (in_grid()) { draw_grid(); return; }
   // Crumb: "SD card / Videos / ...", only the last two folders when it's deeper than that.
   char crumb[700] = "SD card / Videos", count[32], rel[1100];
   if (jf_mode) {   // "Jellyfin / Shows / Northern"
@@ -664,6 +805,7 @@ static void draw_browse(void) {
     if (store_resume(path, NULL, NULL) == RES_PARTIAL) { h[n++] = (DotHint){ "A", "Resume" }; h[n++] = (DotHint){ "X", "From start" }; }
     else h[n++] = (DotHint){ "A", "Play" };
   }
+  if (local_grid && !nitems) h[n++] = (DotHint){ "SELECT", "Sort" };
   h[n++] = (DotHint){ "B", depth ? "Back" : "Quit" };
   h[n++] = (DotHint){ "Y", "Options" };
   dot_dock(dot, h, n);
@@ -942,8 +1084,8 @@ static void on_button(int b) {
     }
     return;
   }
-  if (b == BTN_SELECT && jf_mode && jf_grid && !jf_loading) { jf_sort_next(); return; }
-  if (jf_mode && jf_grid && !jf_loading && nitems) {   // the grid: d-pad in 2D, L1/R1 a page of 10
+  if (b == BTN_SELECT && grid_mode() && !(jf_mode && jf_loading)) { if (jf_mode) jf_sort_next(); else local_sort_next(); return; }
+  if (in_grid()) {   // the grid: d-pad in 2D, L1/R1 a page of 10
     switch (b) {
       case BTN_LEFT: if (cursor) set_cursor(cursor - 1); return;
       case BTN_RIGHT: if (cursor + 1 < nitems) set_cursor(cursor + 1); return;
@@ -1010,6 +1152,18 @@ static void wait_media(void) {   // until the selected file's thumbnail and the 
 
 static void shots(const char *out) {
   list_dir(); wait_media(); shot(out, "browse-root");
+  for (int i = 0; i < nitems; i++) if (!strcmp(items[i].name, "Films")) { set_cursor(i); enter_dir(); break; }
+  if (local_grid) {   // films with covers made from their frames
+    for (int t = 0; t < 600; t++) {
+      int all = 1; const uint8_t *rgb;
+      for (int i = top; i < nitems && i < top + GPAGE; i++) all &= !*cover_of(i) || media_poster(cover_of(i), &rgb);
+      MediaInfo mi; char p[1400]; item_path(cursor, p, sizeof p);
+      if (all && (items[cursor].dir || media_info(p, &mi))) break;
+      SDL_Delay(50);
+    }
+    shot(out, "local-grid");
+  }
+  leave_dir();
   // Into the series, with episode 3 started.
   for (int i = 0; i < nitems; i++) if (!strcmp(items[i].name, "Series")) { set_cursor(i); enter_dir(); break; }
   if (nitems && items[0].dir) enter_dir();
