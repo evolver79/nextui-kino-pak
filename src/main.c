@@ -32,7 +32,8 @@ static char root[1024], cwd[1100];
 static Item *items;
 static int nitems, cursor, top, depth, stack[MAXDEPTH];
 static char playing[1400], playing_title[256];
-static Uint32 overlay_until, toast_until;
+static Uint32 overlay_until, toast_until, seek_until;
+static int seek_dir;   // -1/1: the rewind/forward button shows the last seek for a moment
 static char toast[64];
 static SDL_Texture *thumb_tex;
 static char thumb_for[1400];
@@ -317,9 +318,10 @@ static void draw_overlay(void) {
   dot_text(dot, DOT_LABEL_T, buf, lx, 546, DOT_LABEL, DOT_LEFT, 0);
   dot_adot(dot, lx, 588, dot_accent(dot));
   dot_text(dot, DOT_LABEL_T, paused ? "Paused" : "Playing", lx + 32, 584, DOT_TEXT, DOT_LEFT, 0);
-  dot_round(dot, 702, 570, DOT_I_BACK, 0, 0);
-  dot_round(dot, 806, 570, paused ? DOT_I_PLAY : DOT_I_PAUSE, 1, DOT_FOCUS);
-  dot_round(dot, 900, 570, DOT_I_FWD, 0, 0);
+  int seeking = SDL_GetTicks() < seek_until ? seek_dir : 0;   // the pressed side is lit and has the focus ring
+  dot_round(dot, 702, 570, DOT_I_BACK, 0, seeking < 0 ? DOT_FOCUS | DOT_ON : 0);
+  dot_round(dot, 806, 570, paused ? DOT_I_PLAY : DOT_I_PAUSE, 1, seeking ? 0 : DOT_FOCUS);
+  dot_round(dot, 900, 570, DOT_I_FWD, 0, seeking > 0 ? DOT_FOCUS | DOT_ON : 0);
   dot_progress(dot, 76, 644, 872, len > 0 ? (float)(pos / len) : 0, 1);
   dot_text(dot, DOT_LABEL_T, "◀ ▶ 10 s · L1 R1 1 min · Y options · B stop", 76, 690, DOT_LABEL, DOT_LEFT, 872);
 }
@@ -422,10 +424,11 @@ static void on_button(int b) {
     overlay_until = SDL_GetTicks() + DOT_AUTOHIDE_MS;
     switch (b) {
       case BTN_A: player_pause(!player_paused()); break;
-      case BTN_LEFT: player_seek(-10); break;
-      case BTN_RIGHT: player_seek(10); break;
-      case BTN_L1: player_seek(-60); break;
-      case BTN_R1: player_seek(60); break;
+      case BTN_LEFT: case BTN_RIGHT: case BTN_L1: case BTN_R1:
+        seek_dir = b == BTN_LEFT || b == BTN_L1 ? -1 : 1;
+        seek_until = SDL_GetTicks() + 450;
+        player_seek(seek_dir * (b == BTN_L1 || b == BTN_R1 ? 60 : 10));
+        break;
       case BTN_Y: open_options(); break;
       case BTN_B: stop(0); break;
     }
@@ -490,6 +493,7 @@ static void shots(const char *out) {
   set_cursor(3); wait_media(); shot(out, "browse-new");
   play(2, 0); pump(1500); player_pause(1); pump(400);
   shot(out, "playing");
+  on_button(BTN_RIGHT); pump(200); shot(out, "playing-seek");
   overlay_until = 0; player_pause(0); pump(800); shot(out, "playing-clean");
   open_options(); opt_sel = O_BRIGHT; pump(300); shot(out, "options-night");
   close_options(); stop(0); shot(out, "browse-toast");
