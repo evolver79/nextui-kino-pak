@@ -55,13 +55,15 @@ static JfLevel jstack[MAXDEPTH];
 static JfItem *jitems, playing_jf;
 static Uint32 last_report;
 // Background jobs (network): one at a time.
-enum { J_NONE, J_CONNECT, J_POLL, J_LIST };
+enum { J_NONE, J_CONNECT, J_POLL, J_LIST, J_PLAY };
 static SDL_Thread *job_th;
 static SDL_atomic_t job_done;
 static int job_kind, job_result, job_n;
 static JfItem *job_items;
 static char job_id[40], job_type[32], jf_code[16], jf_server[256], connect_msg[160];
 static Uint32 next_poll;
+static int jf_play_from_start, jf_transcoded;
+static char jf_play_url[1400];
 static int shots_mode;
 // Poster grid (Jellyfin films and series): 5 x 2 covers; textures for the covers in view, by url.
 #define GCOLS 5
@@ -213,6 +215,7 @@ static int job_run(void *u) {
       break;
     case J_POLL: job_result = jf_qc_poll(); break;
     case J_LIST: job_n = job_id[0] ? jf_children(job_id, job_type, &job_items) : jf_views(&job_items); break;
+    case J_PLAY: job_result = jf_playback(&playing_jf, jf_play_url, sizeof jf_play_url); break;
   }
   SDL_AtomicSet(&job_done, 1);
   return 0;
@@ -289,6 +292,16 @@ static void job_finished(void) {
     if (job_result == 1) { if (screen == SCR_CONNECT) { screen = SCR_BROWSE; jf_enter(); } }
     else if (job_result < 0) { jf_code[0] = 0; snprintf(connect_msg, sizeof connect_msg, "The code ran out. Press A for a new one."); }
     else next_poll = SDL_GetTicks() + 2000;
+  } else if (job_kind == J_PLAY) {   // the server said how: direct play or its transcode
+    jf_transcoded = job_result == 2;
+    snprintf(playing, sizeof playing, "%s", jf_play_url);
+    double start = jf_play_from_start ? 0 : playing_jf.pos;
+    player_open(playing, start);
+    jf_report(0, playing_jf.id, start, 0);
+    screen = SCR_PLAY; on_bar = 0;
+    overlay_until = SDL_GetTicks() + DOT_AUTOHIDE_MS;
+    last_save = last_report = SDL_GetTicks();
+    toast_until = 0;
   } else if (job_kind == J_LIST) {
     jf_loading = 0;
     if (job_n < 0) {
@@ -340,17 +353,14 @@ static void show_toast(const char *s) { snprintf(toast, sizeof toast, "%s", s); 
 static void play(int i, int from_start) {
   media_want(NULL, NULL, 0);    // nothing in the background while a film plays: covers and pictures
   media_want_posters(NULL, 0);  // compete for the Wi-Fi and the CPU (they come back in the browser)
-  if (jf_mode) {
-    playing_jf = jitems[i]; jf_playing = 1;
-    jf_stream_url(&playing_jf, playing, sizeof playing);
+  if (jf_mode) {   // first ask the server how (direct or transcoded), on the worker; job_finished starts it
+    if (job_th) return;
+    playing_jf = jitems[i]; jf_playing = 1; jf_play_from_start = from_start;
     if (!strcmp(playing_jf.type, "Episode") && playing_jf.index)
       snprintf(playing_title, sizeof playing_title, "S%d · E%d · %s", playing_jf.season, playing_jf.index, playing_jf.name);
     else snprintf(playing_title, sizeof playing_title, "%s", playing_jf.name);
-    player_open(playing, from_start ? 0 : playing_jf.pos);
-    jf_report(0, playing_jf.id, from_start ? 0 : playing_jf.pos, 0);
-    screen = SCR_PLAY; on_bar = 0;
-    overlay_until = SDL_GetTicks() + DOT_AUTOHIDE_MS;
-    last_save = last_report = SDL_GetTicks();
+    snprintf(toast, sizeof toast, "Starting %s", playing_jf.name); toast_until = SDL_GetTicks() + 15000;
+    start_job(J_PLAY);
     return;
   }
   jf_playing = 0;
@@ -644,7 +654,8 @@ static void draw_overlay(void) {
   char buf[64], dur[32];
   dot_pill(dot, 40, 36, playing_title, 1, 0, DOT_LEFT);
   MediaInfo mi;
-  if (media_info(playing, &mi)) { media_audio_label(&mi, buf, sizeof buf); dot_pill(dot, 984, 36, buf, 0, 1, DOT_RIGHT); }
+  if (jf_playing) dot_pill(dot, 984, 36, jf_transcoded ? "Jellyfin · converted" : "Jellyfin · direct", 0, 1, DOT_RIGHT);
+  else if (media_info(playing, &mi)) { media_audio_label(&mi, buf, sizeof buf); dot_pill(dot, 984, 36, buf, 0, 1, DOT_RIGHT); }
   double pos = player_pos(), len = player_duration();
   int paused = player_paused();
   if (on_bar) pos = scrub_to;
@@ -969,6 +980,15 @@ static double cpu_seconds(void) {
 static int bench(const char *file, double secs) {
   const char *flt = getenv("KINO_FILTER");   // measure a filter: KINO_FILTER=2 kino --bench ...
   if (flt) { settings.filter = atoi(flt) % NFILTER; player_apply_settings(); }
+  char url[1400];
+  if (!strncmp(file, "jf:", 3)) {   // jf:<item id>: as the app plays it (KINO_USER = folder with jellyfin.txt)
+    const char *u = getenv("KINO_USER");
+    jf_load(u ? u : ".");
+    JfItem it = { 0 }; snprintf(it.id, sizeof it.id, "%s", file + 3);
+    int how = jf_playback(&it, url, sizeof url);
+    fprintf(stderr, "jellyfin: %s\n", how == 2 ? "transcoded" : how == 1 ? "direct" : "failed");
+    file = url;
+  }
   player_open(file, 0);
   long frames = 0; Uint32 t0 = 0; double c0 = 0;
   while (running) {

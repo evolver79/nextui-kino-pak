@@ -27,6 +27,9 @@ int jf_qc_poll(void);                              // 1 approved and logged in (
 int jf_views(JfItem **out);                        // the user's libraries; returns the count (-1 on error)
 int jf_children(const char *parent_id, const char *parent_type, JfItem **out);
 void jf_stream_url(const JfItem *it, char *out, size_t n);
+// Asks the server how to play it on the Brick (direct play, or transcoded to H.264/AAC HLS). Fills the url to
+// play; returns 1 direct, 2 transcoded, 0 failed. The play session is kept for the playback reports.
+int jf_playback(const JfItem *it, char *out, size_t n);
 void jf_poster_url(const JfItem *it, int w, int h, char *out, size_t n);   // 2:3 cover for the grid
 void jf_image_url(const JfItem *it, int w, int h, char *out, size_t n);   // 16:9 picture for the detail card
 // Playback reports: what 0 = started, 1 = progress, 2 = stopped. Runs on its own thread, returns at once.

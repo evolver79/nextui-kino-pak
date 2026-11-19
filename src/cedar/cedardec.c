@@ -78,6 +78,10 @@ static void hw_close(HwDec *d) {
 static HwDec *hw_open(const AVCodecParameters *par, AVRational time_base, double fps) {
   int h265 = par->codec_id == AV_CODEC_ID_HEVC;
   if (par->format != AV_PIX_FMT_NONE && par->format != AV_PIX_FMT_YUV420P && par->format != AV_PIX_FMT_YUVJ420P) return NULL;   // 10-bit, 4:2:2
+  // The pixel format may not be known yet when mpv opens the decoder: the profile tells 10-bit too.
+  if (h265 && (par->profile == FF_PROFILE_HEVC_MAIN_10 || par->profile == FF_PROFILE_HEVC_REXT)) return NULL;
+  if (!h265 && par->profile >= FF_PROFILE_H264_HIGH_10 && par->profile != FF_PROFILE_H264_CONSTRAINED_BASELINE) return NULL;
+  if (par->bits_per_raw_sample > 8) return NULL;
   if (par->width > 4096 || par->height > 2304) return NULL;
   if (!hw_available()) return NULL;
   for (int i = 0, z = 0; !atomic_compare_exchange_strong(&busy, &z, 1); i++, z = 0) {   // a closing decoder: wait a moment

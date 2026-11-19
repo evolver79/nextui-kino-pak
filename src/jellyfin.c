@@ -15,6 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 
+static char play_session[80], play_method[16] = "DirectPlay";
 static char server[256], user_id[64], user_name[128], token[128], device_id[40], qc_secret[160], path_cfg[1100];
 
 static void save(void) {
@@ -63,6 +64,7 @@ static char *http(const char *method, const char *path, const char *body, int *e
   AVDictionary *o = NULL;
   av_dict_set(&o, "headers", hdr, 0);
   av_dict_set(&o, "timeout", "8000000", 0);   // µs
+  if (!strcmp(method, "DELETE")) av_dict_set(&o, "method", "DELETE", 0);
   if (!strcmp(method, "POST")) {
     if (!body) body = "{}";
     size_t n = strlen(body);
@@ -225,6 +227,58 @@ void jf_stream_url(const JfItem *it, char *out, size_t n) {
            device_id, token);
 }
 
+// What the Brick plays as it is: the video engine does H.264 and 8-bit HEVC up to 1080p; mpv plays any sound
+// (mixed down to stereo). Everything else the server turns into H.264 + stereo AAC over HLS.
+static const char *DEVICE_PROFILE =
+  "{\"MaxStreamingBitrate\":12000000,\"MaxStaticBitrate\":40000000,\"MusicStreamingTranscodingBitrate\":192000,"
+  "\"DirectPlayProfiles\":[{\"Type\":\"Video\",\"Container\":\"mkv,mp4,m4v,mov,webm,avi,ts,m2ts\","
+  "\"VideoCodec\":\"h264,hevc\",\"AudioCodec\":\"aac,mp3,ac3,eac3,dts,flac,opus,vorbis,truehd,pcm_s16le,mp2\"}],"
+  "\"TranscodingProfiles\":[{\"Type\":\"Video\",\"Container\":\"ts\",\"VideoCodec\":\"h264\","
+  "\"AudioCodec\":\"aac\",\"Protocol\":\"hls\",\"Context\":\"Streaming\",\"MaxAudioChannels\":\"2\","
+  "\"BreakOnNonKeyFrames\":true,\"MinSegments\":1}],"
+  "\"CodecProfiles\":["
+  "{\"Type\":\"Video\",\"Codec\":\"hevc\",\"Conditions\":["
+  "{\"Condition\":\"LessThanEqual\",\"Property\":\"VideoBitDepth\",\"Value\":\"8\",\"IsRequired\":true},"
+  "{\"Condition\":\"LessThanEqual\",\"Property\":\"Width\",\"Value\":\"1920\",\"IsRequired\":true},"
+  "{\"Condition\":\"EqualsAny\",\"Property\":\"VideoRangeType\",\"Value\":\"SDR\",\"IsRequired\":true}]},"
+  "{\"Type\":\"Video\",\"Codec\":\"h264\",\"Conditions\":["
+  "{\"Condition\":\"LessThanEqual\",\"Property\":\"VideoBitDepth\",\"Value\":\"8\",\"IsRequired\":true},"
+  "{\"Condition\":\"LessThanEqual\",\"Property\":\"Width\",\"Value\":\"1920\",\"IsRequired\":true},"
+  "{\"Condition\":\"EqualsAny\",\"Property\":\"VideoRangeType\",\"Value\":\"SDR\",\"IsRequired\":true}]}],"
+  "\"SubtitleProfiles\":[{\"Format\":\"srt\",\"Method\":\"External\"},{\"Format\":\"ass\",\"Method\":\"External\"},"
+  "{\"Format\":\"subrip\",\"Method\":\"Embed\"},{\"Format\":\"ass\",\"Method\":\"Embed\"},"
+  "{\"Format\":\"pgssub\",\"Method\":\"Embed\"},{\"Format\":\"dvdsub\",\"Method\":\"Embed\"}]}";
+
+int jf_playback(const JfItem *it, char *out, size_t n) {
+  char path[300], *body = malloc(strlen(DEVICE_PROFILE) + 300);
+  snprintf(path, sizeof path, "/Items/%s/PlaybackInfo?UserId=%s", it->id, user_id);
+  sprintf(body, "{\"DeviceProfile\":%s,\"MaxStreamingBitrate\":12000000,\"EnableDirectPlay\":true,"
+          "\"EnableDirectStream\":true,\"EnableTranscoding\":true,\"AllowVideoStreamCopy\":true,"
+          "\"AllowAudioStreamCopy\":false,\"AutoOpenLiveStream\":true}", DEVICE_PROFILE);
+  cJSON *j = http_json("POST", path, body, NULL);
+  free(body);
+  play_session[0] = 0;
+  snprintf(play_method, sizeof play_method, "DirectPlay");
+  if (!j) { jf_stream_url(it, out, n); return 0; }
+  snprintf(play_session, sizeof play_session, "%s", jstr(j, "PlaySessionId"));
+  cJSON *ms = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(j, "MediaSources"), 0);
+  int how = 1;
+  if (ms && !jbool(ms, "SupportsDirectPlay") && *jstr(ms, "TranscodingUrl")) {
+    snprintf(out, n, "%s%s", server, jstr(ms, "TranscodingUrl"));
+    snprintf(play_method, sizeof play_method, "Transcode");
+    how = 2;
+  } else {
+    jf_stream_url(it, out, n);
+    if (ms && *jstr(ms, "Id")) {   // the media source may differ from the item (versions)
+      char *q = strstr(out, "MediaSourceId=");
+      if (q) { char rest[400]; char *amp = strchr(q, '&'); snprintf(rest, sizeof rest, "%s", amp ? amp : "");
+               snprintf(q, n - (q - out), "MediaSourceId=%s%s", jstr(ms, "Id"), rest); }
+    }
+  }
+  cJSON_Delete(j);
+  return how;
+}
+
 void jf_poster_url(const JfItem *it, int w, int h, char *out, size_t n) {
   snprintf(out, n, "%s/Items/%s/Images/Primary?fillWidth=%d&fillHeight=%d&quality=85", server, it->id, w, h);
 }
@@ -235,15 +289,22 @@ void jf_image_url(const JfItem *it, int w, int h, char *out, size_t n) {
 }
 
 // --- playback reports -----------------------------------------------------------------------------------------------
-typedef struct { int what; char id[40]; double pos; int paused; } Report;
+typedef struct { int what; char id[40]; double pos; int paused; char session[80], method[16]; } Report;
 static int report_thread(void *u) {
   Report *r = u;
   static const char *paths[3] = { "/Sessions/Playing", "/Sessions/Playing/Progress", "/Sessions/Playing/Stopped" };
   char body[300];
   snprintf(body, sizeof body, "{\"ItemId\":\"%s\",\"MediaSourceId\":\"%s\",\"PositionTicks\":%lld,\"IsPaused\":%s,"
-           "\"PlayMethod\":\"DirectPlay\",\"CanSeek\":true}", r->id, r->id, (long long)(r->pos * 1e7), r->paused ? "true" : "false");
+           "\"PlayMethod\":\"%s\",\"PlaySessionId\":\"%s\",\"CanSeek\":true}", r->id, r->id, (long long)(r->pos * 1e7),
+           r->paused ? "true" : "false", r->method, r->session);
   char *b = http("POST", paths[r->what], body, NULL);
-  free(b); free(r);
+  free(b);
+  if (r->what == 2 && r->session[0]) {   // stop the server's transcoder for this session too
+    char p[300]; snprintf(p, sizeof p, "/Videos/ActiveEncodings?DeviceId=%s&PlaySessionId=%s", device_id, r->session);
+    AVDictionary *o = NULL; (void)o;
+    b = http("DELETE", p, NULL, NULL); free(b);
+  }
+  free(r);
   return 0;
 }
 
@@ -252,6 +313,8 @@ void jf_report(int what, const char *item_id, double pos, int paused) {
   Report *r = calloc(1, sizeof *r);
   r->what = what; r->pos = pos; r->paused = paused;
   snprintf(r->id, sizeof r->id, "%s", item_id);
+  snprintf(r->session, sizeof r->session, "%s", play_session);
+  snprintf(r->method, sizeof r->method, "%s", play_method);
   SDL_Thread *t = SDL_CreateThread(report_thread, "jf-report", r);
   if (t) SDL_DetachThread(t); else free(r);
 }
