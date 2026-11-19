@@ -81,6 +81,12 @@ int player_handle(SDL_Event *e) {
   for (;;) {
     mpv_event *me = mpv_wait_event(mpv, 0);
     if (me->event_id == MPV_EVENT_NONE) break;
+    if (me->event_id == MPV_EVENT_FILE_LOADED) {
+      char *dec = mpv_get_property_string(mpv, "current-tracks/video/decoder-desc");
+      char *codec = mpv_get_property_string(mpv, "video-codec");
+      fprintf(stderr, "video: %s, decoder %s\n", codec ? codec : "?", dec ? dec : "?");
+      mpv_free(dec); mpv_free(codec);
+    }
     if (me->event_id == MPV_EVENT_END_FILE) {
       mpv_event_end_file *ef = me->data;
       if (ef->reason == MPV_END_FILE_REASON_STOP && stopping) stopping = 0;
@@ -155,6 +161,7 @@ void player_apply_settings(void) {
   if (settings.deint == DEINT_AUTO) deint_checked = 0;
   mpv_set_property_string(mpv, "sub-visibility", settings.subs ? "yes" : "no");
   mpv_set_property_string(mpv, "slang", PREFER_LANGS[settings.prefer]);
+  mpv_set_property_string(mpv, "vd", settings.hwdec ? "lavc:h264_cedar,lavc:hevc_cedar" : "");   // next file
 }
 
 int player_sub_tracks(void) {

@@ -39,7 +39,11 @@ fi
 
 if [ ! -f $P/.ffmpeg ]; then
   unpack ffmpeg-5.1.4 ffmpeg-5.1.4.tar.xz && cd $S/ffmpeg-5.1.4
-  # Every decoder, demuxer, parser and filter; nothing that writes, no devices, no hardware decoding.
+  # Kino's decoders on the Brick's video engine (src/cedar): after FFmpeg's own, so those stay the default.
+  cp /w/src/cedar/cedardec.c libavcodec/
+  sed -i '0,/^\/\* external libraries \*\//s//extern const FFCodec ff_h264_cedar_decoder;\nextern const FFCodec ff_hevc_cedar_decoder;\n&/' libavcodec/allcodecs.c
+  sed -i '/^OBJS-\$(CONFIG_H264_V4L2M2M_DECODER)/a OBJS-$(CONFIG_H264_CEDAR_DECODER)      += cedardec.o\nOBJS-$(CONFIG_HEVC_CEDAR_DECODER)      += cedardec.o' libavcodec/Makefile
+  # Every decoder, demuxer, parser and filter; nothing that writes, no devices, no hwaccels (the engine is cedardec).
   ./configure --prefix=$P --enable-static --disable-shared --enable-gpl --enable-pic \
     --disable-programs --disable-doc --disable-debug --disable-encoders --disable-muxers --disable-devices \
     --disable-hwaccels --disable-vaapi --disable-vdpau --disable-xlib --disable-libxcb --disable-sdl2 \

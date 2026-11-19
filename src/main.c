@@ -19,7 +19,7 @@ enum { BTN_A = SDL_CONTROLLER_BUTTON_B, BTN_B = SDL_CONTROLLER_BUTTON_A, BTN_X =
        BTN_UP = SDL_CONTROLLER_BUTTON_DPAD_UP, BTN_DOWN = SDL_CONTROLLER_BUTTON_DPAD_DOWN,
        BTN_LEFT = SDL_CONTROLLER_BUTTON_DPAD_LEFT, BTN_RIGHT = SDL_CONTROLLER_BUTTON_DPAD_RIGHT };
 enum { SCR_BROWSE, SCR_PLAY, SCR_OPTIONS };
-enum { O_ASPECT, O_BRIGHT, O_CONTRAST, O_DEINT, O_SUBS, O_TRACK, O_PREFER, O_LEDS, O_GROUND, NOPT };
+enum { O_ASPECT, O_BRIGHT, O_CONTRAST, O_DEINT, O_SUBS, O_TRACK, O_PREFER, O_LEDS, O_HWDEC, O_GROUND, NOPT };
 #define ROWS 5
 #define MAXDEPTH 32
 
@@ -344,7 +344,7 @@ static void draw_options(void) {
   dot_header(dot, NULL, "B close");
   int f[NOPT]; for (int i = 0; i < NOPT; i++) f[i] = opt_sel == i ? DOT_FOCUS : 0;
   // Two columns of 464, cards 16 apart; heights follow their content (chips wrap to two lines).
-  int P = DOT_OPT_PITCH, ha = dot_panel_h(6 + 2 * DOT_CHIP_H + 10), hp = dot_panel_h(3 * P - 8), hs = hp, hb = dot_panel_h(2 * P - 8);
+  int P = DOT_OPT_PITCH, ha = dot_panel_h(6 + 2 * DOT_CHIP_H + 10), hp = dot_panel_h(3 * P - 8), hs = hp, hb = dot_panel_h(3 * P - 8);
   int y = dot_panel(dot, 40, 96, 464, ha, "Aspect");
   dot_chips(dot, 70, y + 6, 404, ASPECTS, NASPECT, settings.aspect, opt_sel == O_ASPECT ? settings.aspect : -1);
   y = dot_panel(dot, 40, 96 + ha + 16, 464, hp, "Picture");
@@ -357,7 +357,8 @@ static void draw_options(void) {
   dot_opt(dot, 550, y + 2 * P, 404, "Prefer", PREFER_LABELS[settings.prefer], f[O_PREFER]);
   y = dot_panel(dot, 520, 96 + hs + 16, 464, hb, "Brick");
   dot_opt_toggle(dot, 550, y, 404, "Lights follow video", settings.leds, f[O_LEDS]);
-  dot_opt(dot, 550, y + P, 404, "Ground light", settings.ground ? "CENTRE" : "LEFT", f[O_GROUND]);
+  dot_opt_toggle(dot, 550, y + P, 404, "Hardware decoding", settings.hwdec, f[O_HWDEC]);
+  dot_opt(dot, 550, y + 2 * P, 404, "Ground light", settings.ground ? "CENTRE" : "LEFT", f[O_GROUND]);
   DotHint h[] = { { "A", "Change" }, { "<>", "Adjust" }, { "B", "Close" } };
   dot_dock(dot, h, 3);
   dot_set_night(dot, 0);
@@ -407,6 +408,7 @@ static void change_option(int dir) {
     case O_TRACK: if (player_active()) player_cycle_sub(dir); return;
     case O_PREFER: settings.prefer = (settings.prefer + NPREFER + dir) % NPREFER; break;
     case O_LEDS: settings.leds = !settings.leds; break;
+    case O_HWDEC: settings.hwdec = !settings.hwdec; break;
     case O_GROUND: settings.ground = !settings.ground; break;
   }
   settings_save();
