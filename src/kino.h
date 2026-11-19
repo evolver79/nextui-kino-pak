@@ -66,3 +66,8 @@ const char *player_sub_label(void);        // current track: "ENGLISH", "OFF", .
 void player_cycle_sub(int dir);
 Uint32 player_accent(void);                // dominant colour of recent frames
 void player_report(const char *file, double secs, long frames, double cpu);   // --bench line
+
+// --- leds.c: "Lights follow video" -------------------------------------------------------------------------------
+void leds_start(void);              // remembers NextUI's LED setup
+void leds_follow(Uint32 rgb);       // while playing: show this colour (if the setting is on, else NextUI's)
+void leds_restore(void);            // NextUI's setup back

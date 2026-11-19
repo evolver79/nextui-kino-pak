@@ -578,6 +578,7 @@ int main(int argc, char **argv) {
   char p[1200]; snprintf(p, sizeof p, "%s/fonts", pak);
   if (!(dot = dot_init(ren, p, DOT_ACCENT_KINO))) { fprintf(stderr, "fonts in %s: %s\n", p, SDL_GetError()); return 1; }
   store_open(user);
+  if (!shots_dir) leds_start();
   snprintf(p, sizeof p, "%s/cache", user);
   media_start(p);
 
@@ -601,11 +602,13 @@ int main(int argc, char **argv) {
       if (held >= 0 && SDL_GetTicks() >= repeat_at) { on_button(held); repeat_at = SDL_GetTicks() + 70; }
       if (screen == SCR_PLAY && SDL_GetTicks() - last_save > 30000) { save_position(); last_save = SDL_GetTicks(); }
       int fresh = player_active() && player_frame();
+      if (player_active() && screen != SCR_BROWSE) leds_follow(player_accent()); else leds_restore();
       if (screen == SCR_PLAY && !fresh && !player_paused() && !on_bar && SDL_GetTicks() >= overlay_until + 100) continue;
       draw();
       SDL_RenderPresent(ren);
     }
   }
+  leds_restore();
   store_save();
   media_stop();
   if (thumb_tex) SDL_DestroyTexture(thumb_tex);
