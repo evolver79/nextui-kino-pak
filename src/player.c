@@ -4,6 +4,7 @@
 #include <mpv/client.h>
 #include <mpv/render.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static mpv_handle *mpv;
@@ -39,7 +40,8 @@ int player_init(SDL_Renderer *r, int audio) {
   mpv_set_option_string(mpv, "osd-level", "0");
   mpv_set_option_string(mpv, "input-default-bindings", "no");
   mpv_set_option_string(mpv, "terminal", "yes");
-  mpv_set_option_string(mpv, "msg-level", "all=warn");
+  const char *lv = getenv("KINO_MPV_LOG");   // e.g. "all=warn,vd=v,ffmpeg=v" when looking into a problem
+  mpv_set_option_string(mpv, "msg-level", lv && *lv ? lv : "all=warn");
   if (mpv_initialize(mpv) < 0) return -1;
   mpv_render_param params[] = { { MPV_RENDER_PARAM_API_TYPE, (void *)MPV_RENDER_API_TYPE_SW }, { 0 } };
   if (mpv_render_context_create(&rctx, mpv, params) < 0) return -1;
@@ -161,7 +163,7 @@ void player_apply_settings(void) {
   if (settings.deint == DEINT_AUTO) deint_checked = 0;
   mpv_set_property_string(mpv, "sub-visibility", settings.subs ? "yes" : "no");
   mpv_set_property_string(mpv, "slang", PREFER_LANGS[settings.prefer]);
-  mpv_set_property_string(mpv, "vd", settings.hwdec ? "lavc:h264_cedar,lavc:hevc_cedar" : "");   // next file
+  mpv_set_property_string(mpv, "vd", settings.hwdec ? "h264_cedar,hevc_cedar" : "");   // next file
 }
 
 int player_sub_tracks(void) {
