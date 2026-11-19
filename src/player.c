@@ -142,6 +142,7 @@ double player_duration(void) { double v = 0; mpv_get_property(mpv, "duration", M
 int player_paused(void) { int v = 0; mpv_get_property(mpv, "pause", MPV_FORMAT_FLAG, &v); return v; }
 void player_pause(int on) { int v = on; mpv_set_property_async(mpv, 0, "pause", MPV_FORMAT_FLAG, &v); }
 void player_seek(double rel) { char s[32]; snprintf(s, sizeof s, "%.1f", rel); cmd("seek", s, "relative"); }
+void player_seek_to(double pos) { char s[32]; snprintf(s, sizeof s, "%.1f", pos); cmd("seek", s, "absolute"); }
 Uint32 player_accent(void) { return accent; }
 
 void player_apply_settings(void) {

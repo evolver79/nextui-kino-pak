@@ -34,6 +34,8 @@ static int nitems, cursor, top, depth, stack[MAXDEPTH];
 static char playing[1400], playing_title[256];
 static Uint32 overlay_until, toast_until, seek_until;
 static int seek_dir;   // -1/1: the rewind/forward button shows the last seek for a moment
+static int on_bar;     // overlay focus on the progress bar (scrubbing); scrub_to = where A would jump
+static double scrub_to;
 static char toast[64];
 static SDL_Texture *thumb_tex;
 static char thumb_for[1400];
@@ -173,6 +175,7 @@ static void play(int i, int from_start) {
   if (!from_start && store_resume(playing, &pos, NULL) != RES_PARTIAL) pos = 0;
   player_open(playing, pos);
   screen = SCR_PLAY;
+  on_bar = 0;
   overlay_until = SDL_GetTicks() + DOT_AUTOHIDE_MS;
   last_save = SDL_GetTicks();
 }
@@ -183,6 +186,7 @@ static void save_position(void) {
 }
 
 static void stop(int ended) {
+  on_bar = 0;
   if (ended) { store_set_resume(playing, -1, 0); store_save(); }
   else {
     save_position();
@@ -310,6 +314,7 @@ static void draw_overlay(void) {
   if (media_info(playing, &mi)) { media_audio_label(&mi, buf, sizeof buf); dot_pill(dot, 984, 36, buf, 0, 1, DOT_RIGHT); }
   double pos = player_pos(), len = player_duration();
   int paused = player_paused();
+  if (on_bar) pos = scrub_to;
   dot_card(dot, 40, 500, 944, 232);
   fmt_time(pos, buf, sizeof buf);
   int tw = dot_time(dot, DOT_DISPLAY_XL, buf, 76, 526, DOT_TEXT, DOT_LEFT);
@@ -318,12 +323,13 @@ static void draw_overlay(void) {
   dot_text(dot, DOT_LABEL_T, buf, lx, 546, DOT_LABEL, DOT_LEFT, 0);
   dot_adot(dot, lx, 588, dot_accent(dot));
   dot_text(dot, DOT_LABEL_T, paused ? "Paused" : "Playing", lx + 32, 584, DOT_TEXT, DOT_LEFT, 0);
-  int seeking = SDL_GetTicks() < seek_until ? seek_dir : 0;   // the pressed side is lit and has the focus ring
+  int seeking = !on_bar && SDL_GetTicks() < seek_until ? seek_dir : 0;   // the pressed side is lit, with the ring
   dot_round(dot, 702, 570, DOT_I_BACK, 0, seeking < 0 ? DOT_FOCUS | DOT_ON : 0);
-  dot_round(dot, 806, 570, paused ? DOT_I_PLAY : DOT_I_PAUSE, 1, seeking ? 0 : DOT_FOCUS);
+  dot_round(dot, 806, 570, paused ? DOT_I_PLAY : DOT_I_PAUSE, 1, seeking || on_bar ? 0 : DOT_FOCUS);
   dot_round(dot, 900, 570, DOT_I_FWD, 0, seeking > 0 ? DOT_FOCUS | DOT_ON : 0);
-  dot_progress(dot, 76, 644, 872, len > 0 ? (float)(pos / len) : 0, 1);
-  dot_text(dot, DOT_LABEL_T, "◀ ▶ 10 s · L1 R1 1 min · Y options · B stop", 76, 690, DOT_LABEL, DOT_LEFT, 872);
+  dot_progress(dot, 76, 644, 872, len > 0 ? (float)(pos / len) : 0, on_bar ? 2 : 1);
+  dot_text(dot, DOT_LABEL_T, on_bar ? "◀ ▶ move · A jump here · B cancel" : "◀ ▶ 10 s · L1 R1 1 min · ▼ scrub · Y options · B stop",
+           76, 690, DOT_LABEL, DOT_LEFT, 872);
 }
 
 static const char *ASPECTS[NASPECT] = { "Original", "4:3", "16:9", "Stretch", "Zoom" };
@@ -365,7 +371,7 @@ static void draw(void) {
   else if (screen == SCR_OPTIONS) draw_options();
   else {
     draw_video();
-    if (player_paused() || now < overlay_until) draw_overlay();
+    if (player_paused() || on_bar || now < overlay_until) draw_overlay();
   }
   if (now < toast_until) {
     Uint32 left = toast_until - now;
@@ -422,9 +428,28 @@ static void on_button(int b) {
     }
     return;
   }
+  if (screen == SCR_PLAY && on_bar) {   // scrubbing: move the knob, A jumps there
+    double len = player_duration();
+    switch (b) {
+      case BTN_LEFT: case BTN_RIGHT: case BTN_L1: case BTN_R1: {
+        double step = len > 0 ? len / 50 : 10;
+        if (b == BTN_L1 || b == BTN_R1) step *= 5;
+        scrub_to += (b == BTN_LEFT || b == BTN_L1 ? -step : step);
+        if (scrub_to < 0) scrub_to = 0;
+        if (len > 0 && scrub_to > len - 1) scrub_to = len - 1;
+        break;
+      }
+      case BTN_A: player_seek_to(scrub_to); on_bar = 0; break;
+      case BTN_B: case BTN_UP: on_bar = 0; break;
+    }
+    overlay_until = SDL_GetTicks() + DOT_AUTOHIDE_MS;
+    return;
+  }
   if (screen == SCR_PLAY) {
+    int was_visible = player_paused() || SDL_GetTicks() < overlay_until;
     overlay_until = SDL_GetTicks() + DOT_AUTOHIDE_MS;
     switch (b) {
+      case BTN_DOWN: if (was_visible) { on_bar = 1; scrub_to = player_pos(); } break;
       case BTN_A: player_pause(!player_paused()); break;
       case BTN_LEFT: case BTN_RIGHT: case BTN_L1: case BTN_R1:
         seek_dir = b == BTN_LEFT || b == BTN_L1 ? -1 : 1;
@@ -496,6 +521,8 @@ static void shots(const char *out) {
   play(2, 0); pump(1500); player_pause(1); pump(400);
   shot(out, "playing");
   on_button(BTN_RIGHT); pump(200); shot(out, "playing-seek");
+  on_button(BTN_DOWN); for (int i = 0; i < 12; i++) on_button(BTN_RIGHT);
+  shot(out, "playing-scrub"); on_button(BTN_B);
   overlay_until = 0; player_pause(0); pump(800); shot(out, "playing-clean");
   open_options(); opt_sel = O_BRIGHT; pump(300); shot(out, "options-night");
   close_options(); stop(0); shot(out, "browse-toast");
@@ -574,7 +601,7 @@ int main(int argc, char **argv) {
       if (held >= 0 && SDL_GetTicks() >= repeat_at) { on_button(held); repeat_at = SDL_GetTicks() + 70; }
       if (screen == SCR_PLAY && SDL_GetTicks() - last_save > 30000) { save_position(); last_save = SDL_GetTicks(); }
       int fresh = player_active() && player_frame();
-      if (screen == SCR_PLAY && !fresh && !player_paused() && SDL_GetTicks() >= overlay_until + 100) continue;
+      if (screen == SCR_PLAY && !fresh && !player_paused() && !on_bar && SDL_GetTicks() >= overlay_until + 100) continue;
       draw();
       SDL_RenderPresent(ren);
     }

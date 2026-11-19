@@ -59,6 +59,7 @@ double player_pos(void), player_duration(void);
 int player_paused(void);
 void player_pause(int on);
 void player_seek(double rel);
+void player_seek_to(double pos);
 void player_apply_settings(void);
 int player_sub_tracks(void);               // number of subtitle tracks
 const char *player_sub_label(void);        // current track: "ENGLISH", "OFF", ...
