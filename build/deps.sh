@@ -44,10 +44,11 @@ if [ ! -f $P/.ffmpeg ]; then
   sed -i '0,/^\/\* external libraries \*\//s//extern const FFCodec ff_h264_cedar_decoder;\nextern const FFCodec ff_hevc_cedar_decoder;\n&/' libavcodec/allcodecs.c
   sed -i '/^OBJS-\$(CONFIG_H264_V4L2M2M_DECODER)/a OBJS-$(CONFIG_H264_CEDAR_DECODER)      += cedardec.o\nOBJS-$(CONFIG_HEVC_CEDAR_DECODER)      += cedardec.o' libavcodec/Makefile
   # Every decoder, demuxer, parser and filter; nothing that writes, no devices, no hwaccels (the engine is cedardec).
+  # Network on (http, hls: Jellyfin on the LAN); no TLS yet.
   ./configure --prefix=$P --enable-static --disable-shared --enable-gpl --enable-pic \
     --disable-programs --disable-doc --disable-debug --disable-encoders --disable-muxers --disable-devices \
     --disable-hwaccels --disable-vaapi --disable-vdpau --disable-xlib --disable-libxcb --disable-sdl2 \
-    --disable-iconv --disable-lzma --disable-bzlib --disable-network --enable-zlib >/dev/null
+    --disable-iconv --disable-lzma --disable-bzlib --enable-network --enable-zlib >/dev/null
   make -s $J >/dev/null && make -s install >/dev/null && touch $P/.ffmpeg
 fi
 

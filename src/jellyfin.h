@@ -1,0 +1,32 @@
+// Jellyfin on the home network: find the server, log in with Quick Connect, list libraries and items, stream,
+// and tell the server how far you got. Every call blocks (network), so the app runs them on a worker thread.
+// The plan is in docs/JELLYFIN.md.
+#pragma once
+#include <stddef.h>
+
+typedef struct {
+  char id[40], name[160], type[24];   // type: CollectionFolder, Movie, Series, Season, Episode, Folder, BoxSet, ...
+  char series[120];                   // episodes: the series name
+  int folder;                         // has children
+  int year, index, season;            // production year; episode / season numbers
+  double runtime, pos;                // seconds; resume position from the server
+  int played, unplayed;               // seen; unwatched episodes under a series/season
+  int has_backdrop;
+} JfItem;
+
+int jf_load(const char *user_dir);     // reads the saved login; 1 when logged in
+int jf_logged_in(void);
+const char *jf_user_name(void);
+void jf_logout(void);
+
+int jf_discover(char *server, size_t n);           // asks the LAN (UDP 7359); 1 when a server answered
+// Quick Connect: start shows a 6-digit code for the user to approve in the Jellyfin app or web UI.
+int jf_qc_start(const char *server, char *code, size_t n);
+int jf_qc_poll(void);                              // 1 approved and logged in (saved), 0 not yet, -1 failed
+
+int jf_views(JfItem **out);                        // the user's libraries; returns the count (-1 on error)
+int jf_children(const char *parent_id, const char *parent_type, JfItem **out);
+void jf_stream_url(const JfItem *it, char *out, size_t n);
+void jf_image_url(const JfItem *it, int w, int h, char *out, size_t n);   // 16:9 picture for the detail card
+// Playback reports: what 0 = started, 1 = progress, 2 = stopped. Runs on its own thread, returns at once.
+void jf_report(int what, const char *item_id, double pos, int paused);
