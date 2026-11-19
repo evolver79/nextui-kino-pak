@@ -18,6 +18,8 @@ Libraries: films, series, and some 4K / HDR / 10-bit (those need the server to t
   content 96–640. Focus = the round-button ring (4 px card gap + 4 px paper). On the poster only state marks:
   dot progress along the bottom (started), accent dot (new episodes), slightly dimmed (seen). The focused item's
   title is in the header band (Title style left, label right: "2021 · 1H 52M" / "3 SEASONS").
+  Decided after mocks (nextui-dotui test/shots/jellyfin-grid*.png): no titles on or under the covers; the
+  posters carry their own, the header names the focused one.
   D-pad moves, L1/R1 a page, Y sort/filter (A–Z, recently added, unwatched).
 - **Inside a series: like a local folder** (layout a). Several seasons = folder rows; one season = straight to
   the episodes. Episode rows with the episode image in the detail card: title, "S1 · E3 · 44 MIN", overview,
