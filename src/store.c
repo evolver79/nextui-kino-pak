@@ -10,7 +10,8 @@ static Res *res;
 static int nres, capres, dirty;
 static char user[1024];
 
-Settings settings = { ASPECT_ORIGINAL, 0, 0, DEINT_AUTO, 1, 0, 0, 0, 1, FILTER_NONE };
+Settings settings = { ASPECT_ORIGINAL, 0, 0, DEINT_AUTO, 1, 0, 0, 0, 1, FILTER_NONE, SORT_NAME, 0 };
+const char *SORT_NAMES[NSORT] = { "Name", "Recently added", "Unwatched" };
 const char *FILTER_NAMES[NFILTER] = { "None", "Sharpen", "Warm", "Cool", "Black & white", "Retro CRT" };
 const char *ASPECT_NAMES[NASPECT] = { "Original", "4:3", "16:9", "Stretch", "Zoom" };
 const char *PREFER_LANGS[NPREFER] = { "eng,en", "nor,nob,no,nb,en,eng", "nor,nob,no,nb", "", "eng,en,nor,nob,no,nb" };
@@ -36,6 +37,8 @@ static void settings_load(void) {
     else if (!strcmp(k, "ground")) settings.ground = !!v;
     else if (!strcmp(k, "hwdec")) settings.hwdec = !!v;
     else if (!strcmp(k, "filter") && v >= 0 && v < NFILTER) settings.filter = v;
+    else if (!strcmp(k, "sort") && v >= 0 && v < NSORT) settings.sort = v;
+    else if (!strcmp(k, "intro")) settings.intro = !!v;
   }
   fclose(f);
 }
@@ -43,9 +46,9 @@ static void settings_load(void) {
 void settings_save(void) {
   char p[1100]; snprintf(p, sizeof p, "%s/settings.txt", user);
   FILE *f = fopen(p, "w"); if (!f) return;
-  fprintf(f, "aspect=%d\nbrightness=%d\ncontrast=%d\ndeinterlace=%d\nsubtitles=%d\nprefer=%d\nleds=%d\nground=%d\nhwdec=%d\nfilter=%d\n",
+  fprintf(f, "aspect=%d\nbrightness=%d\ncontrast=%d\ndeinterlace=%d\nsubtitles=%d\nprefer=%d\nleds=%d\nground=%d\nhwdec=%d\nfilter=%d\nsort=%d\nintro=%d\n",
           settings.aspect, settings.brightness, settings.contrast, settings.deint, settings.subs, settings.prefer,
-          settings.leds, settings.ground, settings.hwdec, settings.filter);
+          settings.leds, settings.ground, settings.hwdec, settings.filter, settings.sort, settings.intro);
   fclose(f);
 }
 

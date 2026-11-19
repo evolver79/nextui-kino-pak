@@ -12,6 +12,7 @@ typedef struct {
   double runtime, pos;                // seconds; resume position from the server
   int played, unplayed;               // seen; unwatched episodes under a series/season
   int has_backdrop;
+  char added[20];                     // when it came to the server, "2026-11-02T18:40:11" (films and series)
 } JfItem;
 
 int jf_load(const char *user_dir);     // reads the saved login; 1 when logged in

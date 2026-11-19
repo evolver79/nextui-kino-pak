@@ -20,7 +20,7 @@ enum { BTN_A = SDL_CONTROLLER_BUTTON_B, BTN_B = SDL_CONTROLLER_BUTTON_A, BTN_X =
        BTN_UP = SDL_CONTROLLER_BUTTON_DPAD_UP, BTN_DOWN = SDL_CONTROLLER_BUTTON_DPAD_DOWN,
        BTN_LEFT = SDL_CONTROLLER_BUTTON_DPAD_LEFT, BTN_RIGHT = SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
        BTN_L2 = SDL_CONTROLLER_BUTTON_MAX + 1, BTN_R2 = SDL_CONTROLLER_BUTTON_MAX + 2 };   // triggers are axes in SDL
-enum { SCR_BROWSE, SCR_PLAY, SCR_OPTIONS, SCR_CONNECT };
+enum { SCR_BROWSE, SCR_PLAY, SCR_OPTIONS, SCR_CONNECT, SCR_HELP };
 enum { O_ASPECT, O_BRIGHT, O_CONTRAST, O_DEINT, O_FILTER, O_SUBS, O_TRACK, O_PREFER, O_LEDS, O_HWDEC, O_GROUND, NOPT };
 #define ROWS 5
 #define MAXDEPTH 32
@@ -29,7 +29,7 @@ typedef struct { char name[256]; int dir, virt; } Item;   // virt: the Jellyfin 
 
 static SDL_Renderer *ren;
 static Dot *dot;
-static int running = 1, screen = SCR_BROWSE, opt_back, opt_sel, opt_resume_play;
+static int running = 1, screen = SCR_BROWSE, opt_back, opt_sel, opt_resume_play, help_back;
 static char root[1024], cwd[1100];
 static Item *items;
 static int nitems, cursor, top, depth, stack[MAXDEPTH];
@@ -53,6 +53,8 @@ typedef struct { char id[40], type[32], name[160]; int cursor; } JfLevel;
 static int jf_mode, jf_depth, jf_loading, jf_playing;
 static JfLevel jstack[MAXDEPTH];
 static JfItem *jitems, playing_jf;
+static JfItem *jall;   // the whole level as listed; jitems is the view of it (the grid's sort / unwatched filter)
+static int nall;
 static Uint32 last_report;
 // Background jobs (network): one at a time.
 enum { J_NONE, J_CONNECT, J_POLL, J_LIST, J_PLAY };
@@ -226,9 +228,19 @@ static void start_job(int kind) {
   job_th = SDL_CreateThread(job_run, "job", NULL);
 }
 
-static void jf_show(JfItem *list, int n) {   // the listed items become the browser's rows
-  free(jitems); jitems = list;
-  free(items); items = calloc(n > 0 ? n : 1, sizeof *items); nitems = n > 0 ? n : 0;
+static int added_cmp(const void *x, const void *y) {   // newest first
+  return strcmp(((const JfItem *)y)->added, ((const JfItem *)x)->added);
+}
+static int unseen(const JfItem *it) { return it->folder ? it->unplayed > 0 : !it->played; }
+
+static void jf_view(const char *keep_id) {   // jall through the grid's sort into jitems / items
+  free(jitems); jitems = calloc(nall > 0 ? nall : 1, sizeof *jitems);
+  int n = 0;
+  for (int i = 0; i < nall; i++)
+    if (!jf_grid || settings.sort != SORT_UNWATCHED || unseen(&jall[i])) jitems[n++] = jall[i];
+  if (jf_grid && settings.sort == SORT_ADDED) qsort(jitems, n, sizeof *jitems, added_cmp);   // Name: the server's order
+  free(items); items = calloc(n > 0 ? n : 1, sizeof *items); nitems = n;
+  int keep = 0;
   for (int i = 0; i < nitems; i++) {
     JfItem *it = &jitems[i];
     int special = jf_depth > 0 && !strcmp(jstack[jf_depth].type, "Special");
@@ -238,13 +250,28 @@ static void jf_show(JfItem *list, int n) {   // the listed items become the brow
       snprintf(items[i].name, sizeof items[i].name, "%d · %s", it->index, it->name);
     else snprintf(items[i].name, sizeof items[i].name, "%s", it->name);
     items[i].dir = it->folder;
+    if (keep_id && !strcmp(it->id, keep_id)) keep = i;
   }
-  // Films, series and collections as a poster grid; everything else (seasons, episodes, home videos) as rows.
-  jf_grid = nitems > 0;
-  for (int i = 0; i < nitems; i++)
-    if (strcmp(jitems[i].type, "Movie") && strcmp(jitems[i].type, "Series") && strcmp(jitems[i].type, "BoxSet")) jf_grid = 0;
   top = 0;
-  set_cursor(0);
+  set_cursor(keep);
+}
+
+static void jf_show(JfItem *list, int n) {   // the listed items become the browser's rows
+  free(jall); jall = list; nall = n > 0 ? n : 0;
+  // Films, series and collections as a poster grid; everything else (seasons, episodes, home videos) as rows.
+  jf_grid = nall > 0;
+  for (int i = 0; i < nall; i++)
+    if (strcmp(jall[i].type, "Movie") && strcmp(jall[i].type, "Series") && strcmp(jall[i].type, "BoxSet")) jf_grid = 0;
+  jf_view(NULL);
+}
+
+static void jf_sort_next(void) {   // SELECT in the grid: Name, Recently added, Unwatched
+  char id[40] = ""; if (cursor < nitems) snprintf(id, sizeof id, "%s", jitems[cursor].id);
+  settings.sort = (settings.sort + 1) % NSORT;
+  settings_save();
+  jf_view(id);
+  char t[64]; snprintf(t, sizeof t, "Sort · %s", SORT_NAMES[settings.sort]);
+  show_toast(t);
 }
 
 static void jf_open(const char *id, const char *type, const char *name) {   // list a level (id "" = libraries)
@@ -272,7 +299,7 @@ static void jf_enter(void) {   // from the SD card root
 
 static void jf_leave_level(void) {
   if (jf_depth == 0) {   // back to the SD card
-    jf_mode = 0; jf_grid = 0; free(jitems); jitems = NULL;
+    jf_mode = 0; jf_grid = 0; free(jitems); jitems = NULL; free(jall); jall = NULL; nall = 0;
     list_dir();
     return;
   }
@@ -392,6 +419,11 @@ static void stop(int ended) {
     double pos = ended ? playing_jf.runtime : player_pos();
     jf_report(2, playing_jf.id, pos, 0);
     if (!ended) player_close();
+    for (int i = 0; i < nall && jf_mode; i++)   // the whole level too (the grid's view is made from it)
+      if (!strcmp(jall[i].id, playing_jf.id)) {
+        double len = jall[i].runtime;
+        if (ended || (len > 0 && pos > len * .9)) { jall[i].played = 1; jall[i].pos = 0; } else jall[i].pos = pos;
+      }
     for (int i = 0; i < nitems && jf_mode; i++)   // the list shows the new state before the next refresh
       if (!strcmp(jitems[i].id, playing_jf.id)) {
         double len = jitems[i].runtime;
@@ -456,8 +488,10 @@ static void jf_label(const JfItem *it, char *out, size_t n) {   // "S1 · E3 · 
 static void draw_detail_jf(void) {
   dot_card(dot, 40, 96, 460, 528);
   if (jf_loading || !nitems) {
+    int all_seen = !jf_loading && jf_grid && settings.sort == SORT_UNWATCHED;
     draw_thumb_area(56, 112, "", 1);
-    dot_text(dot, DOT_TITLE, jf_loading ? "Loading…" : "Nothing here", 70, 374, DOT_TEXT, DOT_LEFT, 400);
+    dot_text(dot, DOT_TITLE, jf_loading ? "Loading…" : all_seen ? "All seen" : "Nothing here", 70, 374, DOT_TEXT, DOT_LEFT, 400);
+    if (all_seen) dot_text(dot, DOT_BODY_S, "Press SELECT to show everything.", 70, 424, DOT_LABEL, DOT_LEFT, 400);
     return;
   }
   JfItem *it = &jitems[cursor];
@@ -559,7 +593,7 @@ static void draw_grid(void) {   // 5 x 2 covers; the focused one's name in the h
   DotHint h[4]; int n = 0;
   if (f->folder) h[n++] = (DotHint){ "A", "Open" };
   else h[n++] = (DotHint){ "A", f->pos > 0 && !f->played ? "Resume" : "Play" };
-  h[n++] = (DotHint){ "L1 R1", "Page" };
+  h[n++] = (DotHint){ "SELECT", "Sort" };
   h[n++] = (DotHint){ "B", "Back" };
   h[n++] = (DotHint){ "Y", "Options" };
   dot_dock(dot, h, n);
@@ -618,6 +652,7 @@ static void draw_browse(void) {
       else if (it->pos > 0 && !it->played) { h[n++] = (DotHint){ "A", "Resume" }; h[n++] = (DotHint){ "X", "From start" }; }
       else h[n++] = (DotHint){ "A", "Play" };
     }
+    if (jf_grid && !jf_loading && !nitems) h[n++] = (DotHint){ "SELECT", "Sort" };
     h[n++] = (DotHint){ "B", "Back" };
     h[n++] = (DotHint){ "Y", "Options" };
     dot_dock(dot, h, n);
@@ -714,8 +749,8 @@ static void draw_options(void) {
   dot_opt_toggle(dot, 550, y, 404, "Lights follow video", settings.leds, f[O_LEDS]);
   dot_opt_toggle(dot, 550, y + P, 404, "Hardware decoding", settings.hwdec, f[O_HWDEC]);
   dot_opt(dot, 550, y + 2 * P, 404, "Ground light", settings.ground ? "CENTRE" : "LEFT", f[O_GROUND]);
-  DotHint h[] = { { "A", "Change" }, { "<>", "Adjust" }, { "B", "Close" } };
-  dot_dock(dot, h, 3);
+  DotHint h[] = { { "A", "Change" }, { "<>", "Adjust" }, { "X", "Buttons" }, { "B", "Close" } };
+  dot_dock(dot, h, 4);
   dot_set_night(dot, 0);
 }
 
@@ -742,6 +777,32 @@ static void draw_connect(void) {   // Quick Connect: the code in dots, approved 
   dot_dock(dot, h, n);
 }
 
+// The buttons, shown on the first start and from Options (X).
+static const DotHint HELP_BROWSE[] = { { "A", "Open, play, resume" }, { "X", "Play from the start" }, { "B", "Back" },
+  { "L1 R1", "A page up or down" }, { "SELECT", "Sort the covers" }, { "Y", "Options" }, { "MENU", "Quit" } };
+static const DotHint HELP_PLAY[] = { { "A", "Pause" }, { "<>", "10 seconds back, on" }, { "DOWN", "Scrub, A jumps there" },
+  { "L1 R1", "Picture filter" }, { "L2 R2", "Aspect" }, { "SELECT", "Subtitles on, off" }, { "B", "Stop, save the place" } };
+
+static void draw_help_panel(int x, const char *label, const DotHint *h, int n) {
+  enum { PITCH = 64 };   // a key cap is 58 high
+  int y = dot_panel(dot, x, 96, 464, dot_panel_h(n * PITCH - 6), label);
+  for (int i = 0; i < n; i++, y += PITCH) {
+    dot_key(dot, x + 30, y, h[i].key, 0, 2);   // raised: on a black card
+    dot_text(dot, DOT_UI, h[i].text, x + 30 + 150, y + (DOT_KEY - dot_line_h(dot, DOT_UI)) / 2, DOT_TEXT, DOT_LEFT, 464 - 60 - 150);
+  }
+}
+
+static void draw_help(void) {
+  dot_set_ground(dot, settings.ground ? DOT_GROUND_TOPCENTRE : DOT_GROUND_TOPLEFT);
+  dot_ground(dot);
+  dot_title(dot, "BUTTONS");
+  dot_header(dot, NULL, help_back == SCR_OPTIONS ? "B close" : NULL);
+  draw_help_panel(40, "Browsing", HELP_BROWSE, 7);
+  draw_help_panel(520, "Playing", HELP_PLAY, 7);
+  DotHint h[1] = { help_back == SCR_OPTIONS ? (DotHint){ "B", "Close" } : (DotHint){ "A", "Got it" } };
+  dot_dock(dot, h, 1);
+}
+
 static void draw(void) {
   dot_frame(dot);
   dot_set_accent(dot, DOT_ACCENT_KINO);
@@ -749,6 +810,7 @@ static void draw(void) {
   if (screen == SCR_BROWSE) draw_browse();
   else if (screen == SCR_CONNECT) draw_connect();
   else if (screen == SCR_OPTIONS) draw_options();
+  else if (screen == SCR_HELP) draw_help();
   else {
     draw_video();
     if (player_paused() || on_bar || now < overlay_until) draw_overlay();
@@ -806,8 +868,16 @@ static void on_button(int b) {
     else if (b == BTN_A && !jf_code[0] && !job_th) jf_enter();
     return;
   }
+  if (screen == SCR_HELP) {
+    if (b == BTN_A || b == BTN_B || b == BTN_X || b == BTN_Y) {
+      screen = help_back;
+      if (!settings.intro) { settings.intro = 1; settings_save(); }
+    }
+    return;
+  }
   if (screen == SCR_OPTIONS) {
     switch (b) {
+      case BTN_X: help_back = SCR_OPTIONS; screen = SCR_HELP; break;
       case BTN_UP: opt_sel = (opt_sel + NOPT - 1) % NOPT; break;
       case BTN_DOWN: opt_sel = (opt_sel + 1) % NOPT; break;
       case BTN_LEFT: change_option(-1); break;
@@ -859,11 +929,20 @@ static void on_button(int b) {
         player_apply_settings();
         break;
       }
+      case BTN_SELECT:
+        settings.subs = !settings.subs;
+        snprintf(info, sizeof info, "Subtitles · %s", settings.subs ? "On" : "Off");
+        info_until = SDL_GetTicks() + 1500;
+        overlay_until = 0;
+        settings_save();
+        player_apply_settings();
+        break;
       case BTN_Y: open_options(); break;
       case BTN_B: stop(0); break;
     }
     return;
   }
+  if (b == BTN_SELECT && jf_mode && jf_grid && !jf_loading) { jf_sort_next(); return; }
   if (jf_mode && jf_grid && !jf_loading && nitems) {   // the grid: d-pad in 2D, L1/R1 a page of 10
     switch (b) {
       case BTN_LEFT: if (cursor) set_cursor(cursor - 1); return;
@@ -956,6 +1035,8 @@ static void shots(const char *out) {
   open_options(); opt_sel = O_BRIGHT; pump(300); shot(out, "options-night");
   close_options(); stop(0); shot(out, "browse-toast");
   toast_until = 0; open_options(); opt_sel = O_ASPECT; shot(out, "options");
+  on_button(BTN_X); shot(out, "help-from-options"); on_button(BTN_B);
+  help_back = SCR_BROWSE; screen = SCR_HELP; shot(out, "help-first-start"); screen = SCR_OPTIONS;
   screen = SCR_CONNECT; snprintf(jf_code, sizeof jf_code, "722223");
   snprintf(connect_msg, sizeof connect_msg, "http://192.168.68.152:8096"); shot(out, "jellyfin-connect");
   if (!jf_logged_in()) return;
@@ -984,6 +1065,20 @@ static void shots(const char *out) {
         SDL_Delay(50);
       }
       char nm[32]; snprintf(nm, sizeof nm, "jf-grid-%d", lib); shot(out, nm);
+      if (lib == first_lib) {   // the other two sorts (back to the user's sort after)
+        int was = settings.sort;
+        for (int k = 1; k < NSORT; k++) {
+          jf_sort_next(); want_media();
+          for (int t = 0; t < 300; t++) {
+            int all = 1; const uint8_t *rgb;
+            for (int i = top; i < nitems && i < top + GPAGE; i++) { char u[600]; jf_poster_url(&jitems[i], POSTER_W, POSTER_H, u, sizeof u); all &= media_poster(u, &rgb); }
+            if (all) break;
+            SDL_Delay(50);
+          }
+          snprintf(nm, sizeof nm, "jf-grid-sort-%d", settings.sort); shot(out, nm);
+        }
+        settings.sort = was; settings_save(); jf_view(NULL); toast_until = 0;
+      }
     }
   }
 }
@@ -1057,6 +1152,7 @@ int main(int argc, char **argv) {
   if (shots_dir) shots(shots_dir);
   else {
     list_dir();
+    if (!settings.intro) { help_back = SCR_BROWSE; screen = SCR_HELP; }
     int held = -1; Uint32 repeat_at = 0;
     while (running) {
       SDL_Event e;

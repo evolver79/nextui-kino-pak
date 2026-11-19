@@ -49,7 +49,11 @@ typedef struct {
   int subs, prefer, leds, ground;            // prefer = index into PREFER_LANGS; ground = Dot light point (test)
   int hwdec;                                 // the video engine for H.264/HEVC (src/cedar)
   int filter;                                // FILTER_*: L1/R1 while playing
+  int sort;                                  // SORT_*: the Jellyfin cover grid (SELECT)
+  int intro;                                 // 1 once the button screen has been shown on the first start
 } Settings;
+enum { SORT_NAME, SORT_ADDED, SORT_UNWATCHED, NSORT };
+extern const char *SORT_NAMES[NSORT];
 extern Settings settings;
 extern const char *PREFER_LANGS[], *PREFER_LABELS[];
 #define NPREFER 5

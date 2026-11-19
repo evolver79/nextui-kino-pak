@@ -184,6 +184,7 @@ static int items_from(cJSON *arr, JfItem **out) {
     it->index = (int)jnum(o, "IndexNumber");
     it->season = (int)jnum(o, "ParentIndexNumber");
     it->runtime = jnum(o, "RunTimeTicks") / 1e7;
+    snprintf(it->added, sizeof it->added, "%.19s", jstr(o, "DateCreated"));   // ISO 8601: sorts as text
     it->has_backdrop = cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(o, "BackdropImageTags")) > 0;
     cJSON *ud = cJSON_GetObjectItemCaseSensitive(o, "UserData");
     if (ud) {
@@ -241,7 +242,7 @@ int jf_children(const char *parent_id, const char *parent_type, JfItem **out) {
   const char *kind = strstr(parent_type, ":movies") ? "Movie" : strstr(parent_type, ":tvshow") ? "Series" : NULL;
   if (kind) {
     snprintf(p, sizeof p, "/Users/%s/Items?ParentId=%s&Recursive=true&IncludeItemTypes=%s&Fields=BackdropImageTags,"
-             "ProductionYear&SortBy=SortName&SortOrder=Ascending&Limit=2000", user_id, parent_id, kind);
+             "ProductionYear,DateCreated&SortBy=SortName&SortOrder=Ascending&Limit=2000", user_id, parent_id, kind);
     return list(p, out);
   }
   snprintf(p, sizeof p, "/Users/%s/Items?ParentId=%s&Fields=Overview,BackdropImageTags,SeriesName,ProductionYear"
