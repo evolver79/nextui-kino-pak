@@ -4,6 +4,20 @@ Plays films and series on the TrimUI Brick (`tg5040`), from the SD card's `Video
 [Jellyfin](https://jellyfin.org) server on the home network. Drawn with [Dot](https://github.com/evolver79/nextui-dotui),
 the shared look of Kino, Musicdisk and Tuner.
 
+*Kino* is the word for cinema in Norwegian, as in German, Swedish, Danish, Russian and many other languages. It comes
+from the Greek *kínēma*, movement, by way of the cinematograph.
+
+<p>
+<img src="docs/screens/browse-series.png" width="49%" alt="Browsing a series: the selected episode's picture, facts and resume time on the left, the episodes as rows on the right">
+<img src="docs/screens/local-grid.png" width="49%" alt="A folder of films as covers, made from frames of the films or a picture next to them">
+<img src="docs/screens/playing.png" width="49%" alt="Playing, paused: the time in dot-matrix numbers, rewind, play and forward, and a dotted progress bar">
+<img src="docs/screens/options.png" width="49%" alt="Options: aspect, picture, subtitles and Brick settings in four cards">
+<img src="docs/screens/jellyfin-connect.png" width="49%" alt="Jellyfin Quick Connect: a six-digit code to approve in the Jellyfin app">
+<img src="docs/screens/help-first-start.png" width="49%" alt="The buttons screen shown on the first start">
+</p>
+
+Screens rendered headless from the app with test clips (`build/shots.sh`).
+
 - **Hardware decoding:** H.264 and 8-bit HEVC up to 1080p play on the Brick's video engine (Allwinner CedarC, through
   an FFmpeg decoder in `src/cedar`), about one CPU core at 24 fps. Everything else decodes in software.
 - **SD card:** folders and files as rows with a picture and the facts of the selected one (length, resolution, codec).
