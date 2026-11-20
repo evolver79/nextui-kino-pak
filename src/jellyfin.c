@@ -278,12 +278,12 @@ static const char *DEVICE_PROFILE =
   "{\"Format\":\"subrip\",\"Method\":\"Embed\"},{\"Format\":\"ass\",\"Method\":\"Embed\"},"
   "{\"Format\":\"pgssub\",\"Method\":\"Embed\"},{\"Format\":\"dvdsub\",\"Method\":\"Embed\"}]}";
 
-int jf_playback(const JfItem *it, char *out, size_t n) {
+int jf_playback(const JfItem *it, char *out, size_t n, int max_bps) {
   char path[300], *body = malloc(strlen(DEVICE_PROFILE) + 300);
   snprintf(path, sizeof path, "/Items/%s/PlaybackInfo?UserId=%s", it->id, user_id);
-  sprintf(body, "{\"DeviceProfile\":%s,\"MaxStreamingBitrate\":12000000,\"EnableDirectPlay\":true,"
+  sprintf(body, "{\"DeviceProfile\":%s,\"MaxStreamingBitrate\":%d,\"EnableDirectPlay\":true,"
           "\"EnableDirectStream\":true,\"EnableTranscoding\":true,\"AllowVideoStreamCopy\":true,"
-          "\"AllowAudioStreamCopy\":false,\"AutoOpenLiveStream\":true}", DEVICE_PROFILE);
+          "\"AllowAudioStreamCopy\":false,\"AutoOpenLiveStream\":true}", DEVICE_PROFILE, max_bps);
   cJSON *j = http_json("POST", path, body, NULL);
   free(body);
   play_session[0] = 0;

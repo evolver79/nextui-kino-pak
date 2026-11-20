@@ -31,8 +31,9 @@ int jf_views(JfItem **out);
 int jf_children(const char *parent_id, const char *parent_type, JfItem **out);
 void jf_stream_url(const JfItem *it, char *out, size_t n);
 // Asks the server how to play it on the Brick (direct play, or transcoded to H.264/AAC HLS). Fills the url to
-// play; returns 1 direct, 2 transcoded, 0 failed. The play session is kept for the playback reports.
-int jf_playback(const JfItem *it, char *out, size_t n);
+// play; returns 1 direct, 2 transcoded, 0 failed. max_bps: above it the server converts to a smaller stream.
+// The play session is kept for the playback reports.
+int jf_playback(const JfItem *it, char *out, size_t n, int max_bps);
 // Subtitle files the server offers for what jf_playback just set up (next to the video, or text tracks a
 // transcode can't carry): i from 0 until it returns 0.
 int jf_subtitle(int i, const char **url, const char **title, const char **lang);

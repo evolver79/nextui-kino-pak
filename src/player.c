@@ -12,6 +12,7 @@ static mpv_render_context *rctx;
 static SDL_Renderer *ren;
 static SDL_Texture *tex;
 static int tw, th, active, pending, stopping, frames, deint_checked;
+static double last_pos, last_dur;   // kept while playing: still known after the stream has broken off
 static Uint32 ev_mpv, ev_redraw, accent = 0xff6a2b;
 static char sub_label[64];
 static char pend_url[12][700], pend_title[12][96], pend_lang[12][16];
@@ -43,6 +44,12 @@ int player_init(SDL_Renderer *r, int audio) {
   mpv_set_option_string(mpv, "osd-level", "0");
   mpv_set_option_string(mpv, "input-default-bindings", "no");
   mpv_set_option_string(mpv, "terminal", "yes");
+  // Network streams: FFmpeg reconnects by itself after a short drop (it doesn't by default), a read gives up after
+  // 15 s instead of 60 so Kino can open the stream again, and playback waits for 3 s of film before it carries on.
+  mpv_set_option_string(mpv, "stream-lavf-o", "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=8");
+  mpv_set_option_string(mpv, "network-timeout", "15");
+  mpv_set_option_string(mpv, "cache", "yes");
+  mpv_set_option_string(mpv, "cache-pause-wait", "3");
   const char *lv = getenv("KINO_MPV_LOG");   // e.g. "all=warn,vd=v,ffmpeg=v" when looking into a problem
   mpv_set_option_string(mpv, "msg-level", lv && *lv ? lv : "all=warn");
   if (mpv_initialize(mpv) < 0) return -1;
@@ -75,6 +82,7 @@ void player_open(const char *path, double start) {
   const char *v[] = { "loadfile", path, "replace", opt, NULL };
   mpv_command(mpv, v);
   active = 1; stopping = 0; frames = 0; deint_checked = 0;
+  last_pos = start > 0 ? start : 0; last_dur = 0;
   accent = 0xff6a2b;
 }
 
@@ -87,6 +95,7 @@ void player_close(void) {
 
 int player_active(void) { return active; }
 
+// 1: the file played to its end. 2: it broke off (an error, or the stream ended well before the film did).
 int player_handle(SDL_Event *e) {
   if (e->type == ev_redraw) { pending = 1; return 0; }
   if (e->type != ev_mpv) return 0;
@@ -108,7 +117,11 @@ int player_handle(SDL_Event *e) {
     if (me->event_id == MPV_EVENT_END_FILE) {
       mpv_event_end_file *ef = me->data;
       if (ef->reason == MPV_END_FILE_REASON_STOP && stopping) stopping = 0;
-      else if (active && ef->reason != MPV_END_FILE_REASON_REDIRECT) { active = 0; ended = 1; }
+      else if (active && ef->reason != MPV_END_FILE_REASON_REDIRECT) {
+        int early = ef->reason == MPV_END_FILE_REASON_EOF && last_dur > 0 && last_pos < last_dur - 20;
+        active = 0; ended = ef->reason == MPV_END_FILE_REASON_ERROR || early ? 2 : 1;
+        fprintf(stderr, "end of file: reason %d, error %d, at %.0f of %.0f s\n", ef->reason, ef->error, last_pos, last_dur);
+      }
     }
   }
   return ended;
@@ -137,6 +150,7 @@ int player_frame(void) {
   mpv_render_param rp[] = { { MPV_RENDER_PARAM_SW_SIZE, size }, { MPV_RENDER_PARAM_SW_FORMAT, "bgr0" },
                             { MPV_RENDER_PARAM_SW_STRIDE, &stride }, { MPV_RENDER_PARAM_SW_POINTER, px }, { 0 } };
   mpv_render_context_render(rctx, rp);
+  if (frames % 24 == 0) { player_pos(); player_duration(); }
   if (frames++ % 48 == 0) accent = media_accent_of(px, tw, th, pitch, 1);
   SDL_UnlockTexture(tex);
   mpv_render_context_report_swap(rctx);
@@ -161,8 +175,27 @@ SDL_Texture *player_texture(SDL_Rect *d) {
   return tex;
 }
 
-double player_pos(void) { double v = 0; mpv_get_property(mpv, "time-pos", MPV_FORMAT_DOUBLE, &v); return v; }
-double player_duration(void) { double v = 0; mpv_get_property(mpv, "duration", MPV_FORMAT_DOUBLE, &v); return v; }
+double player_pos(void) {
+  double v = 0;
+  if (active && mpv_get_property(mpv, "time-pos", MPV_FORMAT_DOUBLE, &v) >= 0 && v > 0) last_pos = v;
+  return last_pos;
+}
+double player_duration(void) {
+  double v = 0;
+  if (active && mpv_get_property(mpv, "duration", MPV_FORMAT_DOUBLE, &v) >= 0 && v > 0) last_dur = v;
+  return last_dur;
+}
+int player_buffering(void) {   // -1: playing normally; else how full the buffer is before playback carries on, 0-100
+  if (!active) return -1;
+  int waiting = 0, idle = 0, paused = 0; int64_t pct = 0;
+  mpv_get_property(mpv, "paused-for-cache", MPV_FORMAT_FLAG, &waiting);
+  mpv_get_property(mpv, "core-idle", MPV_FORMAT_FLAG, &idle);
+  mpv_get_property(mpv, "pause", MPV_FORMAT_FLAG, &paused);
+  if (!waiting && !(idle && !paused)) return -1;   // core-idle while not paused: opening or seeking, no picture yet
+  if (!waiting) return 101;                         // opening or seeking: waiting for the server, no percentage
+  mpv_get_property(mpv, "cache-buffering-state", MPV_FORMAT_INT64, &pct);
+  return pct < 0 ? 0 : pct > 100 ? 100 : (int)pct;
+}
 int player_paused(void) { int v = 0; mpv_get_property(mpv, "pause", MPV_FORMAT_FLAG, &v); return v; }
 void player_pause(int on) { int v = on; mpv_set_property_async(mpv, 0, "pause", MPV_FORMAT_FLAG, &v); }
 void player_seek(double rel) { char s[32]; snprintf(s, sizeof s, "%.1f", rel); cmd("seek", s, "relative"); }

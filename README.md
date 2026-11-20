@@ -11,7 +11,7 @@ from the Greek *kínēma*, movement, by way of the cinematograph.
 <img src="docs/screens/browse-series.png" width="49%" alt="Browsing a series: the selected episode's picture, facts and resume time on the left, the episodes as rows on the right">
 <img src="docs/screens/local-grid.png" width="49%" alt="A folder of films as covers, made from frames of the films or a picture next to them">
 <img src="docs/screens/playing.png" width="49%" alt="Playing, paused: the time in dot-matrix numbers, rewind, play and forward, and a dotted progress bar">
-<img src="docs/screens/options.png" width="49%" alt="Options: aspect, picture, subtitles and Brick settings in four cards">
+<img src="docs/screens/options-quality.png" width="49%" alt="Options: aspect, picture, subtitles and Brick settings in four cards">
 <img src="docs/screens/jellyfin-connect.png" width="49%" alt="Jellyfin Quick Connect: a six-digit code to approve in the Jellyfin app">
 <img src="docs/screens/help-first-start.png" width="49%" alt="The buttons screen shown on the first start">
 </p>
@@ -27,6 +27,11 @@ Screens rendered headless from the app with test clips (`build/shots.sh`).
 - **Jellyfin:** finds the server on the network and logs in with Quick Connect (a code you approve in the Jellyfin
   app). Continue watching and Next up first, films and series as a cover grid, seasons and episodes as rows. Plays
   directly when the Brick can, otherwise the server converts it. Progress is reported back to the server.
+- **Streaming over Wi-Fi:** Jellyfin quality in Options sets the most the server may send (2, 4 or 8 Mbit/s, or
+  max; 4 by default, plenty for the screen and light on the Brick's 2.4 GHz Wi-Fi); bigger files are converted to
+  fit. A pill at the top shows when a film is buffering or waiting for the server, with a note when the Wi-Fi is
+  weak. When the stream breaks off, Kino reconnects and carries on where it was (five tries); if that fails it goes
+  back to the list with your place kept. Wi-Fi power saving is off while a Jellyfin film plays.
 - **While playing:** picture filters (sharpen, warm, cool, black & white, retro CRT), aspect (original, 4:3, 16:9,
   stretch, zoom), brightness, contrast, deinterlacing, subtitles with a preferred language, and the Brick's lights
   can follow the colour of the picture.

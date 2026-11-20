@@ -10,7 +10,10 @@ static Res *res;
 static int nres, capres, dirty;
 static char user[1024];
 
-Settings settings = { ASPECT_ORIGINAL, 0, 0, DEINT_AUTO, 1, 0, 0, 0, 1, FILTER_NONE, SORT_NAME, 0 };
+Settings settings = { ASPECT_ORIGINAL, 0, 0, DEINT_AUTO, 1, 0, 0, 0, 1, FILTER_NONE, SORT_NAME, 0, QUALITY_4 };
+// Streaming quality: 4 Mbit/s by default, plenty for the 1024x768 screen and light on the Brick's 2.4 GHz Wi-Fi.
+const char *QUALITY_NAMES[NQUALITY] = { "2 MBIT/S", "4 MBIT/S", "8 MBIT/S", "MAX" };
+const int QUALITY_BPS[NQUALITY] = { 2000000, 4000000, 8000000, 12000000 };
 const char *SORT_NAMES[NSORT] = { "Name", "Recently added", "Unwatched" };
 const char *FILTER_NAMES[NFILTER] = { "None", "Sharpen", "Warm", "Cool", "Black & white", "Retro CRT" };
 const char *ASPECT_NAMES[NASPECT] = { "Original", "4:3", "16:9", "Stretch", "Zoom" };
@@ -39,6 +42,7 @@ static void settings_load(void) {
     else if (!strcmp(k, "filter") && v >= 0 && v < NFILTER) settings.filter = v;
     else if (!strcmp(k, "sort") && v >= 0 && v < NSORT) settings.sort = v;
     else if (!strcmp(k, "intro")) settings.intro = !!v;
+    else if (!strcmp(k, "quality") && v >= 0 && v < NQUALITY) settings.quality = v;
   }
   fclose(f);
 }
@@ -46,9 +50,9 @@ static void settings_load(void) {
 void settings_save(void) {
   char p[1100]; snprintf(p, sizeof p, "%s/settings.txt", user);
   FILE *f = fopen(p, "w"); if (!f) return;
-  fprintf(f, "aspect=%d\nbrightness=%d\ncontrast=%d\ndeinterlace=%d\nsubtitles=%d\nprefer=%d\nleds=%d\nground=%d\nhwdec=%d\nfilter=%d\nsort=%d\nintro=%d\n",
+  fprintf(f, "aspect=%d\nbrightness=%d\ncontrast=%d\ndeinterlace=%d\nsubtitles=%d\nprefer=%d\nleds=%d\nground=%d\nhwdec=%d\nfilter=%d\nsort=%d\nintro=%d\nquality=%d\n",
           settings.aspect, settings.brightness, settings.contrast, settings.deint, settings.subs, settings.prefer,
-          settings.leds, settings.ground, settings.hwdec, settings.filter, settings.sort, settings.intro);
+          settings.leds, settings.ground, settings.hwdec, settings.filter, settings.sort, settings.intro, settings.quality);
   fclose(f);
 }
 

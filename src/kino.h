@@ -51,13 +51,24 @@ typedef struct {
   int filter;                                // FILTER_*: L1/R1 while playing
   int sort;                                  // SORT_*: the Jellyfin cover grid (SELECT)
   int intro;                                 // 1 once the button screen has been shown on the first start
+  int quality;                               // QUALITY_*: the most Jellyfin may send; above it, it converts
 } Settings;
+enum { QUALITY_2, QUALITY_4, QUALITY_8, QUALITY_MAX, NQUALITY };
+extern const char *QUALITY_NAMES[NQUALITY];
+extern const int QUALITY_BPS[NQUALITY];
 enum { SORT_NAME, SORT_ADDED, SORT_UNWATCHED, NSORT };
 extern const char *SORT_NAMES[NSORT];
 extern Settings settings;
 extern const char *PREFER_LANGS[], *PREFER_LABELS[];
 #define NPREFER 5
 void settings_save(void);
+
+// --- wifi.c: the Wi-Fi signal, read in the background --------------------------------------------------------------
+enum { WIFI_UNKNOWN, WIFI_OFF, WIFI_WEAK, WIFI_OK };
+void wifi_start(void);
+int wifi_state(void);                      // WIFI_*
+int wifi_dbm(void);                        // last signal, 0 when not connected
+void wifi_power_save(int on);              // off while a Jellyfin film plays: a sleeping radio misses the router's beacons
 
 // --- player.c: libmpv ---------------------------------------------------------------------------------------------
 int player_init(SDL_Renderer *r, int audio);
@@ -66,7 +77,8 @@ void player_open(const char *path, double start);
 void player_add_sub(const char *url, const char *title, const char *lang);   // before player_open: loaded with the file
 void player_close(void);                   // stops; the caller saves the position first
 int player_active(void);
-int player_handle(SDL_Event *e);           // mpv's events; returns 1 when the file ended
+int player_handle(SDL_Event *e);           // mpv's events; 1 when the file ended, 2 when it broke off
+int player_buffering(void);                // -1 playing; 0-100 buffered before carrying on; 101 opening or seeking
 int player_frame(void);                    // renders a new frame into the texture if there is one; 1 = new
 SDL_Texture *player_texture(SDL_Rect *dst);   // where it goes on screen with the current aspect setting
 double player_pos(void), player_duration(void);
