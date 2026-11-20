@@ -7,7 +7,7 @@
 
 #define WEAK_DBM -72
 
-static SDL_atomic_t state, dbm;
+static SDL_atomic_t state, dbm, drops;   // drops: times the link went from connected to gone
 static int saved_ps = -1;   // power save before Kino turned it off: 1 on, 0 off, -1 not touched
 
 static void read_once(void) {
@@ -21,6 +21,8 @@ static void read_once(void) {
   }
   pclose(f);
   SDL_AtomicSet(&dbm, connected ? sig : 0);
+  int was = SDL_AtomicGet(&state);
+  if (!connected && (was == WIFI_OK || was == WIFI_WEAK)) SDL_AtomicIncRef(&drops);
   SDL_AtomicSet(&state, !connected ? WIFI_OFF : sig && sig < WEAK_DBM ? WIFI_WEAK : WIFI_OK);
 }
 
@@ -37,6 +39,7 @@ void wifi_start(void) {
 
 int wifi_state(void) { return SDL_AtomicGet(&state); }
 int wifi_dbm(void) { return SDL_AtomicGet(&dbm); }
+int wifi_drops(void) { return SDL_AtomicGet(&drops); }
 
 void wifi_power_save(int on) {
   if (!on) {

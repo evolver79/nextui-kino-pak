@@ -68,6 +68,7 @@ enum { WIFI_UNKNOWN, WIFI_OFF, WIFI_WEAK, WIFI_OK };
 void wifi_start(void);
 int wifi_state(void);                      // WIFI_*
 int wifi_dbm(void);                        // last signal, 0 when not connected
+int wifi_drops(void);                      // how often the link has dropped since start (roaming, lost router)
 void wifi_power_save(int on);              // off while a Jellyfin film plays: a sleeping radio misses the router's beacons
 
 // --- player.c: libmpv ---------------------------------------------------------------------------------------------

@@ -45,9 +45,12 @@ static double scrub_to;
 static char info[48];   // "ASPECT · 16:9" pill after L2/R2 or L1/R1 while playing
 static Uint32 info_until;
 static int lost_tries; static Uint32 retry_at;   // a Jellyfin stream that broke off: opened again from where it was
+// The network during this Jellyfin film: stalls (stops to buffer once playing), Wi-Fi drops since it started, and
+// whether Kino has said the Wi-Fi can't keep up (then the buffering pill says so too, for the rest of the film).
+static int net_stalls, net_drops0, net_poor, net_was_buffering;
 #define LOST_TRIES 5
 static SDL_Texture *crt_tex;
-static char toast[64];
+static char toast[160];
 static SDL_Texture *thumb_tex;
 static char thumb_for[1400];
 static Uint32 thumb_accent;
@@ -432,6 +435,7 @@ static void job_finished(void) {
     overlay_until = SDL_GetTicks() + DOT_AUTOHIDE_MS;
     last_save = last_report = SDL_GetTicks();
     toast_until = 0;
+    if (!lost_tries && wifi_state() == WIFI_WEAK) show_toast("Weak Wi-Fi: this film may stop to buffer");
   } else if (job_kind == J_LIST) {
     jf_loading = 0;
     if (job_n < 0) {
@@ -496,6 +500,7 @@ static void play(int i, int from_start) {
   if (jf_mode) {   // first ask the server how (direct or transcoded), on the worker; job_finished starts it
     if (job_th) return;
     playing_jf = jitems[i]; jf_playing = 1; jf_play_from_start = from_start;
+    net_stalls = net_poor = net_was_buffering = 0; net_drops0 = wifi_drops();
     if (!strcmp(playing_jf.type, "Episode") && playing_jf.index)
       snprintf(playing_title, sizeof playing_title, "S%d · E%d · %s", playing_jf.season, playing_jf.index, playing_jf.name);
     else snprintf(playing_title, sizeof playing_title, "%s", playing_jf.name);
@@ -868,12 +873,29 @@ static void draw_overlay(void) {
            76, 690, DOT_LABEL, DOT_LEFT, 872);
 }
 
+// Watches a Jellyfin film for a network that can't keep up: the second time it stops to buffer, or the Wi-Fi link
+// drops (roaming between mesh points, lost router) even with a good signal. Says so once, with what to try.
+static void net_watch(void) {
+  int b = player_buffering(), buffering = b >= 0 && b <= 100;   // 101 is opening or seeking: not a stall
+  if (buffering && !net_was_buffering && player_pos() > playing_jf.pos + 5) net_stalls++;
+  net_was_buffering = buffering;
+  if (net_poor) return;
+  int dropped = wifi_drops() > net_drops0;
+  if (net_stalls < 2 && !dropped && !lost_tries) return;
+  net_poor = 1;
+  char t[160];
+  snprintf(t, sizeof t, "%s · %s", dropped || lost_tries ? "Wi-Fi keeps dropping out" : "Wi-Fi too slow for this film",
+           settings.quality > QUALITY_2 ? "try a lower quality in Options" : "move closer to the router");
+  show_toast(t); toast_until = SDL_GetTicks() + 7000;
+}
+
 // Top centre while the film waits for the network: buffering and how far, or the tries to reconnect; weak Wi-Fi added.
 static void draw_net_status(void) {
   int b = player_buffering();
   if (!lost_tries && b < 0) return;
   char s[96];
-  const char *wifi = wifi_state() == WIFI_OFF ? " · no Wi-Fi" : wifi_state() == WIFI_WEAK ? " · weak Wi-Fi" : "";
+  const char *wifi = wifi_state() == WIFI_OFF ? " · no Wi-Fi" : wifi_state() == WIFI_WEAK ? " · weak Wi-Fi" :
+                     net_poor ? " · Wi-Fi too slow" : "";
   if (lost_tries) snprintf(s, sizeof s, "Connection lost · reconnecting %d/%d%s", lost_tries, LOST_TRIES, wifi);
   else if (b > 100) snprintf(s, sizeof s, "Waiting for the server%s", wifi);
   else snprintf(s, sizeof s, "Buffering %d%%%s", b, wifi);
@@ -1206,6 +1228,10 @@ static void shots(const char *out) {
   pump(600); player_frame(); shot(out, "playing-crt");
   on_button(BTN_R1); on_button(BTN_R2); pump(300); shot(out, "playing-aspect");
   overlay_until = 0; player_pause(0); pump(800); shot(out, "playing-clean");
+  int q = settings.quality;   // the two Wi-Fi warnings: stalls at 4 Mbit/s, then drops at 2
+  settings.quality = QUALITY_4; net_poor = 0; net_stalls = 2; net_watch(); shot(out, "playing-wifi-slow");
+  settings.quality = QUALITY_2; net_poor = 0; lost_tries = 1; net_watch(); shot(out, "playing-wifi-drops");
+  settings.quality = q; net_poor = net_stalls = lost_tries = 0; toast_until = 0;
   open_options(); opt_sel = O_BRIGHT; pump(300); shot(out, "options-night");
   close_options(); stop(0); shot(out, "browse-toast");
   toast_until = 0; open_options(); opt_sel = O_ASPECT; shot(out, "options");
@@ -1367,6 +1393,7 @@ int main(int argc, char **argv) {
       if (retry_at && SDL_GetTicks() >= retry_at && !job_th && jf_playing) {   // ask the server again: a fresh URL
         retry_at = 0; playing_jf.pos = player_pos(); jf_play_from_start = 0; start_job(J_PLAY);
       }
+      if (jf_playing && player_active()) net_watch();
       if (lost_tries && !retry_at && player_active() && player_buffering() < 0 && player_pos() > playing_jf.pos + 10)
         lost_tries = 0;   // playing again for 10 s: a later drop gets five new tries
       if (screen == SCR_CONNECT && jf_code[0] && !job_th && SDL_GetTicks() >= next_poll) start_job(J_POLL);
