@@ -19,4 +19,5 @@ Portions of this software are copyright © 2023 The FreeType Project (www.freety
 
 Source: https://github.com/evolver79/nextui-kino-pak. build/fetch.sh downloads the exact library versions above
 (checked by SHA-256) and build/deps.sh shows how they are configured and built, including the Brick decoders added
-to FFmpeg (src/cedar/cedardec.c). The fonts in fonts/ carry their own licences (SIL Open Font License).
+to FFmpeg (src/cedar/cedardec.c). The fonts in fonts/ (Dot's: Doto, Geist) and mpv/fonts/ (Noto Sans, for subtitles) carry their own licences (SIL Open
+Font License).

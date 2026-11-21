@@ -1,4 +1,6 @@
 deps/*.tar.*
+deps/*.ttf
+deps/*.txt
 build/out/
 dist/
 test/
@@ -8,3 +10,4 @@ Kino.pak/lib/
 Kino.pak/fonts/
 Kino.pak/licenses/
 Kino.pak/LICENSE
+Kino.pak/mpv/

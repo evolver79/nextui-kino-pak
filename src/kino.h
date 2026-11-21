@@ -52,7 +52,11 @@ typedef struct {
   int sort;                                  // SORT_*: the Jellyfin cover grid (SELECT)
   int intro;                                 // 1 once the button screen has been shown on the first start
   int quality;                               // QUALITY_*: the most Jellyfin may send; above it, it converts
+  int subsize;                               // SUBSIZE_*: subtitle size (Options > Subtitles > Size)
 } Settings;
+enum { SUBSIZE_S, SUBSIZE_M, SUBSIZE_L, SUBSIZE_XL, NSUBSIZE };
+extern const char *SUBSIZE_NAMES[NSUBSIZE];
+extern const double SUBSIZE_SCALE[NSUBSIZE];
 enum { QUALITY_2, QUALITY_4, QUALITY_8, QUALITY_MAX, NQUALITY };
 extern const char *QUALITY_NAMES[NQUALITY];
 extern const int QUALITY_BPS[NQUALITY];
@@ -72,7 +76,7 @@ int wifi_drops(void);                      // how often the link has dropped sin
 void wifi_power_save(int on);              // off while a Jellyfin film plays: a sleeping radio misses the router's beacons
 
 // --- player.c: libmpv ---------------------------------------------------------------------------------------------
-int player_init(SDL_Renderer *r, int audio);
+int player_init(SDL_Renderer *r, int audio, const char *mpv_dir);   // mpv_dir: Kino.pak/mpv (fonts/: the subtitle font)
 void player_quit(void);
 void player_open(const char *path, double start);
 void player_add_sub(const char *url, const char *title, const char *lang);   // before player_open: loaded with the file

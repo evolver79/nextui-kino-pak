@@ -24,7 +24,7 @@ static void cmd(const char *a, const char *b, const char *c) {
   const char *v[] = { a, b, c, NULL }; mpv_command_async(mpv, 0, v);
 }
 
-int player_init(SDL_Renderer *r, int audio) {
+int player_init(SDL_Renderer *r, int audio, const char *mpv_dir) {
   ren = r;
   ev_mpv = SDL_RegisterEvents(2); ev_redraw = ev_mpv + 1;
   mpv = mpv_create();
@@ -40,7 +40,19 @@ int player_init(SDL_Renderer *r, int audio) {
   mpv_set_option_string(mpv, "framedrop", "decoder+vo");
   mpv_set_option_string(mpv, "sws-scaler", "fast-bilinear");
   mpv_set_option_string(mpv, "sub-auto", "fuzzy");               // film.srt / film.en.srt next to the file
-  mpv_set_option_string(mpv, "sub-font-size", "46");
+  mpv_set_option_string(mpv, "sub-font-size", "54");   // about mpv's default (55); 46 was small on the 3.5" screen
+  // libass is built without fontconfig, so it finds no fonts by itself and text subtitles (.srt, Jellyfin's, and text
+  // tracks inside a film) came out blank. mpv 0.35 only looks for subtitle fonts in its config folder (fonts/ there),
+  // which libmpv has off: so on, at Kino.pak/mpv, which holds Noto Sans (made to be read, not Dot's look) and no
+  // mpv.conf. Fonts inside an .mkv still work; picture subtitles (PGS, VobSub) need none.
+  mpv_set_option_string(mpv, "config", "yes");
+  mpv_set_option_string(mpv, "config-dir", mpv_dir);
+  mpv_set_option_string(mpv, "sub-font-provider", "none");
+  mpv_set_option_string(mpv, "sub-font", "Noto Sans");
+  // A black box behind the text (75 %: a little of the picture shows through), easier to read than an outline alone
+  // over a busy picture; the border size is the box's padding
+  mpv_set_option_string(mpv, "sub-back-color", "#C0000000");
+  mpv_set_option_string(mpv, "sub-border-size", "6");
   mpv_set_option_string(mpv, "osd-level", "0");
   mpv_set_option_string(mpv, "input-default-bindings", "no");
   mpv_set_option_string(mpv, "terminal", "yes");
@@ -50,6 +62,14 @@ int player_init(SDL_Renderer *r, int audio) {
   mpv_set_option_string(mpv, "network-timeout", "15");
   mpv_set_option_string(mpv, "cache", "yes");
   mpv_set_option_string(mpv, "cache-pause-wait", "3");
+  // KINO_CACHE_SECS=10: read only that far ahead (test/net.sh), so a slow or broken network shows within seconds
+  // instead of after the minutes of film mpv otherwise keeps
+  const char *cs = getenv("KINO_CACHE_SECS");
+  if (cs && *cs) {
+    mpv_set_option_string(mpv, "cache-secs", cs);
+    mpv_set_option_string(mpv, "demuxer-readahead-secs", cs);
+    mpv_set_option_string(mpv, "demuxer-max-bytes", "8MiB");
+  }
   const char *lv = getenv("KINO_MPV_LOG");   // e.g. "all=warn,vd=v,ffmpeg=v" when looking into a problem
   mpv_set_option_string(mpv, "msg-level", lv && *lv ? lv : "all=warn");
   if (mpv_initialize(mpv) < 0) return -1;
@@ -228,6 +248,8 @@ void player_apply_settings(void) {
   mpv_set_property_string(mpv, "deinterlace", settings.deint == DEINT_ON ? "yes" : "no");
   if (settings.deint == DEINT_AUTO) deint_checked = 0;
   mpv_set_property_string(mpv, "sub-visibility", settings.subs ? "yes" : "no");
+  char sc[16]; snprintf(sc, sizeof sc, "%.2f", SUBSIZE_SCALE[settings.subsize]);
+  mpv_set_property_string(mpv, "sub-scale", sc);
   mpv_set_property_string(mpv, "slang", PREFER_LANGS[settings.prefer]);
   mpv_set_property_string(mpv, "vd", settings.hwdec ? "h264_cedar,hevc_cedar" : "");   // next file
 }

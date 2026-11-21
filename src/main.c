@@ -8,6 +8,8 @@
 #include "jellyfin.h"
 #include <ctype.h>
 #include <dirent.h>
+#include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +51,17 @@ static int lost_tries; static Uint32 retry_at;   // a Jellyfin stream that broke
 // whether Kino has said the Wi-Fi can't keep up (then the buffering pill says so too, for the rest of the film).
 static int net_stalls, net_drops0, net_poor, net_was_buffering;
 #define LOST_TRIES 5
+static Uint32 net_t0;   // when this Jellyfin film was asked for; net: log lines count from it
+static const char *net_shots;   // KINO_SHOTS=<dir>: a screenshot at each warning (test/net.sh)
+static volatile sig_atomic_t net_reset;   // SIGUSR1 (test/net.sh, next scenario): warn again as if a new film
+static void on_usr1(int sig) { (void)sig; net_reset = 1; }
+static void shot(const char *dir, const char *name);
+// "net: ..." lines in the log (Kino.txt) while a Jellyfin film plays: what the network did and what Kino said.
+static void net_log(const char *shot_name, const char *fmt, ...) {
+  char m[200]; va_list a; va_start(a, fmt); vsnprintf(m, sizeof m, fmt, a); va_end(a);
+  fprintf(stderr, "net: %6.1f %s\n", (SDL_GetTicks() - net_t0) / 1000.0, m);
+  if (net_shots && shot_name) shot(net_shots, shot_name);
+}
 static SDL_Texture *crt_tex;
 static char toast[160];
 static SDL_Texture *thumb_tex;
@@ -412,6 +425,7 @@ static void jf_leave_level(void) {
   jstack[jf_depth].cursor = c;
 }
 
+static void stream_lost(const char *how);
 static void job_finished(void) {
   SDL_WaitThread(job_th, NULL); job_th = NULL;
   if (job_kind == J_CONNECT) {
@@ -428,6 +442,10 @@ static void job_finished(void) {
     const char *su, *st, *sl;
     for (int i = 0; jf_subtitle(i, &su, &st, &sl); i++) player_add_sub(su, st, sl);
     double start = jf_play_from_start ? 0 : playing_jf.pos;
+    if (lost_tries && !job_result) {   // reconnecting and the server didn't answer: no point opening the film and waiting
+      player_close(); stream_lost("server didn't answer"); return;
+    }
+    net_log(NULL, "open at %.0f s, %s", start, job_result == 2 ? "transcoded" : job_result == 1 ? "direct" : "server didn't answer");
     player_open(playing, start);
     wifi_power_save(0);
     if (!lost_tries) jf_report(0, playing_jf.id, start, 0);
@@ -435,7 +453,7 @@ static void job_finished(void) {
     overlay_until = SDL_GetTicks() + DOT_AUTOHIDE_MS;
     last_save = last_report = SDL_GetTicks();
     toast_until = 0;
-    if (!lost_tries && wifi_state() == WIFI_WEAK) show_toast("Weak Wi-Fi: this film may stop to buffer");
+    if (!lost_tries && wifi_state() == WIFI_WEAK) { show_toast("Weak Wi-Fi: this film may stop to buffer"); net_log("weak", "toast: weak Wi-Fi"); }
   } else if (job_kind == J_LIST) {
     jf_loading = 0;
     if (job_n < 0) {
@@ -494,18 +512,23 @@ static void select_path(const char *path) {   // put the cursor on this file if 
 // --- playing --------------------------------------------------------------------------------------------------
 static void show_toast(const char *s) { snprintf(toast, sizeof toast, "%s", s); toast_until = SDL_GetTicks() + 2600; }
 
+static void play_jf(const JfItem *it, int from_start) {   // first ask the server how, on the worker
+  if (job_th) return;
+  playing_jf = *it; jf_playing = 1; jf_play_from_start = from_start;
+  net_stalls = net_poor = net_was_buffering = 0; net_drops0 = wifi_drops(); net_t0 = SDL_GetTicks();
+  net_log(NULL, "play %s from %.0f s, quality %d", playing_jf.id, from_start ? 0 : playing_jf.pos, settings.quality);
+  if (!strcmp(playing_jf.type, "Episode") && playing_jf.index)
+    snprintf(playing_title, sizeof playing_title, "S%d · E%d · %s", playing_jf.season, playing_jf.index, playing_jf.name);
+  else snprintf(playing_title, sizeof playing_title, "%s", playing_jf.name);
+  snprintf(toast, sizeof toast, "Starting %s", playing_jf.name); toast_until = SDL_GetTicks() + 15000;
+  start_job(J_PLAY);
+}
+
 static void play(int i, int from_start) {
   media_want(NULL, NULL, 0);    // nothing in the background while a film plays: covers and pictures
   media_want_posters(NULL, 0);  // compete for the Wi-Fi and the CPU (they come back in the browser)
   if (jf_mode) {   // first ask the server how (direct or transcoded), on the worker; job_finished starts it
-    if (job_th) return;
-    playing_jf = jitems[i]; jf_playing = 1; jf_play_from_start = from_start;
-    net_stalls = net_poor = net_was_buffering = 0; net_drops0 = wifi_drops();
-    if (!strcmp(playing_jf.type, "Episode") && playing_jf.index)
-      snprintf(playing_title, sizeof playing_title, "S%d · E%d · %s", playing_jf.season, playing_jf.index, playing_jf.name);
-    else snprintf(playing_title, sizeof playing_title, "%s", playing_jf.name);
-    snprintf(toast, sizeof toast, "Starting %s", playing_jf.name); toast_until = SDL_GetTicks() + 15000;
-    start_job(J_PLAY);
+    play_jf(&jitems[i], from_start);
     return;
   }
   jf_playing = 0;
@@ -873,20 +896,41 @@ static void draw_overlay(void) {
            76, 690, DOT_LABEL, DOT_LEFT, 872);
 }
 
+// A film that broke off (or a Jellyfin one stuck waiting): try again in 2, 4, 6, 8, 10 s, asking the server for a fresh
+// stream each time; after that give up, back to the list, the place kept, not marked as seen.
+static void stream_lost(const char *how) {
+  if (jf_playing && lost_tries < LOST_TRIES) {
+    lost_tries++; retry_at = SDL_GetTicks() + 2000 * lost_tries;
+    net_log(lost_tries == 1 ? "lost" : NULL, "stream %s at %.0f s, reconnecting %d/%d in %d s", how, player_pos(), lost_tries,
+            LOST_TRIES, 2 * lost_tries);
+    return;
+  }
+  int net = jf_playing;   // stop() clears it
+  stop(0);
+  show_toast(net ? "Lost the connection to Jellyfin" : "Couldn't play this file");
+  if (net) net_log("gave-up", "gave up after %d tries: toast: Lost the connection to Jellyfin", LOST_TRIES);
+}
+
 // Watches a Jellyfin film for a network that can't keep up: the second time it stops to buffer, or the Wi-Fi link
 // drops (roaming between mesh points, lost router) even with a good signal. Says so once, with what to try.
 static void net_watch(void) {
   int b = player_buffering(), buffering = b >= 0 && b <= 100;   // 101 is opening or seeking: not a stall
-  if (buffering && !net_was_buffering && player_pos() > playing_jf.pos + 5) net_stalls++;
+  if (buffering && !net_was_buffering && player_pos() > playing_jf.pos + 5) {
+    net_stalls++; net_log(NULL, "stall %d at %.0f s (buffer %d%%)", net_stalls, player_pos(), b);
+  } else if (!buffering && net_was_buffering) net_log(NULL, "playing again at %.0f s", player_pos());
   net_was_buffering = buffering;
+  static int drops_seen; int d = wifi_drops() - net_drops0;
+  if (d > 0 && d != drops_seen) net_log(NULL, "Wi-Fi link dropped (%d this film)", d);
+  drops_seen = d;
   if (net_poor) return;
-  int dropped = wifi_drops() > net_drops0;
+  int dropped = d > 0;
   if (net_stalls < 2 && !dropped && !lost_tries) return;
   net_poor = 1;
   char t[160];
   snprintf(t, sizeof t, "%s · %s", dropped || lost_tries ? "Wi-Fi keeps dropping out" : "Wi-Fi too slow for this film",
            settings.quality > QUALITY_2 ? "try a lower quality in Options" : "move closer to the router");
   show_toast(t); toast_until = SDL_GetTicks() + 7000;
+  net_log("warning", "toast: %s", t);
 }
 
 // Top centre while the film waits for the network: buffering and how far, or the tries to reconnect; weak Wi-Fi added.
@@ -925,7 +969,9 @@ static void draw_options(void) {
   for (char *q = fname; *q; q++) if (*q >= 'a' && *q <= 'z') *q -= 32;
   dot_opt(dot, 70, y + 3 * P, 404, "Filter", fname, f[O_FILTER]);
   y = dot_panel(dot, 520, 96, 464, hs, "Subtitles");
-  dot_opt_toggle(dot, 550, y, 404, "Show", settings.subs, f[O_SUBS]);
+  // Show and size in one row: OFF, S, M, L, XL (A: on/off, keeping the size; SELECT while playing does the same)
+  char show[24]; snprintf(show, sizeof show, "%s", settings.subs ? SUBSIZE_NAMES[settings.subsize] : "OFF");
+  dot_opt(dot, 550, y, 404, "Show · size", show, f[O_SUBS]);
   dot_opt(dot, 550, y + P, 404, "Track", player_sub_label(), f[O_TRACK] | (player_active() ? 0 : DOT_OFF));
   dot_opt(dot, 550, y + 2 * P, 404, "Prefer", PREFER_LABELS[settings.prefer], f[O_PREFER]);
   y = dot_panel(dot, 520, 96 + hs + 16, 464, hb, "Brick");
@@ -1031,7 +1077,12 @@ static void change_option(int dir) {
     case O_CONTRAST: settings.contrast = clampi(settings.contrast + 5 * dir, -50, 50); break;
     case O_DEINT: settings.deint = (settings.deint + NDEINT + dir) % NDEINT; break;
     case O_FILTER: settings.filter = (settings.filter + NFILTER + dir) % NFILTER; break;
-    case O_SUBS: settings.subs = !settings.subs; break;
+    case O_SUBS:   // OFF < S < M < L < XL; A (dir 0) switches on/off and keeps the size
+      if (!dir) settings.subs = !settings.subs;
+      else if (!settings.subs) { if (dir > 0) { settings.subs = 1; settings.subsize = SUBSIZE_S; } }
+      else if (settings.subsize + dir < 0) settings.subs = 0;
+      else settings.subsize = clampi(settings.subsize + dir, 0, NSUBSIZE - 1);
+      break;
     case O_TRACK: if (player_active()) player_cycle_sub(dir); return;
     case O_PREFER: settings.prefer = (settings.prefer + NPREFER + dir) % NPREFER; break;
     case O_LEDS: settings.leds = !settings.leds; break;
@@ -1065,7 +1116,8 @@ static void on_button(int b) {
       case BTN_UP: opt_sel = (opt_sel + NOPT - 1) % NOPT; break;
       case BTN_DOWN: opt_sel = (opt_sel + 1) % NOPT; break;
       case BTN_LEFT: change_option(-1); break;
-      case BTN_RIGHT: case BTN_A: change_option(1); break;
+      case BTN_RIGHT: change_option(1); break;
+      case BTN_A: change_option(opt_sel == O_SUBS ? 0 : 1); break;
       case BTN_B: case BTN_Y: close_options(); break;
     }
     return;
@@ -1219,7 +1271,9 @@ static void shots(const char *out) {
   set_cursor(2); wait_media(); shot(out, "browse-series");
   settings.ground = 1; shot(out, "browse-series-ground-centre"); settings.ground = 0;
   set_cursor(3); wait_media(); shot(out, "browse-new");
-  play(2, 0); pump(1500); player_pause(1); pump(400);
+  play(2, 0); pump(1500); overlay_until = 0; pump(400);
+  shot(out, "playing-subtitles");   // playing, no controls: the .srt next to it (build/shots.sh) in Noto Sans
+  player_pause(1); pump(400);
   shot(out, "playing");
   on_button(BTN_RIGHT); pump(200); shot(out, "playing-seek");
   on_button(BTN_DOWN); for (int i = 0; i < 12; i++) on_button(BTN_RIGHT);
@@ -1235,6 +1289,7 @@ static void shots(const char *out) {
   open_options(); opt_sel = O_BRIGHT; pump(300); shot(out, "options-night");
   close_options(); stop(0); shot(out, "browse-toast");
   toast_until = 0; open_options(); opt_sel = O_ASPECT; shot(out, "options");
+  opt_sel = O_SUBS; settings.subsize = SUBSIZE_L; shot(out, "options-subsize"); settings.subsize = SUBSIZE_M;
   on_button(BTN_X); shot(out, "help-from-options"); on_button(BTN_B);
   help_back = SCR_BROWSE; screen = SCR_HELP; shot(out, "help-first-start"); screen = SCR_OPTIONS;
   screen = SCR_CONNECT; snprintf(jf_code, sizeof jf_code, "722223");
@@ -1337,7 +1392,8 @@ int main(int argc, char **argv) {
   if (!ren) { fprintf(stderr, "renderer: %s\n", SDL_GetError()); return 1; }
   SDL_RenderSetLogicalSize(ren, W, H);
   for (int i = 0; i < SDL_NumJoysticks(); i++) if (SDL_IsGameController(i)) SDL_GameControllerOpen(i);
-  if (player_init(ren, !shots_dir) != 0) { fprintf(stderr, "mpv failed to start\n"); return 1; }
+  char mpvdir[1200]; snprintf(mpvdir, sizeof mpvdir, "%s/mpv", pak);
+  if (player_init(ren, !shots_dir, mpvdir) != 0) { fprintf(stderr, "mpv failed to start\n"); return 1; }
   if (is_bench) { int r = bench(argv[2], atof(argv[3])); player_quit(); SDL_Quit(); return r; }
 
   char p[1200]; snprintf(p, sizeof p, "%s/fonts", pak);
@@ -1353,6 +1409,15 @@ int main(int argc, char **argv) {
   else {
     list_dir();
     if (!settings.intro) { help_back = SCR_BROWSE; screen = SCR_HELP; }
+    // KINO_PLAY=<Jellyfin item id>[@seconds]: straight into that film (test/net.sh); KINO_SHOTS=<dir> as above
+    const char *ap = getenv("KINO_PLAY"); net_shots = getenv("KINO_SHOTS");
+    if (ap && *ap && jf_logged_in()) {
+      signal(SIGUSR1, on_usr1);
+      JfItem it = { 0 }; snprintf(it.id, sizeof it.id, "%.*s", (int)strcspn(ap, "@"), ap);
+      snprintf(it.name, sizeof it.name, "%s", it.id); snprintf(it.type, sizeof it.type, "Movie");
+      if (strchr(ap, '@')) it.pos = atof(strchr(ap, '@') + 1);
+      screen = SCR_BROWSE; play_jf(&it, 0);
+    }
     int held = -1; Uint32 repeat_at = 0;
     while (running) {
       SDL_Event e;
@@ -1373,14 +1438,7 @@ int main(int argc, char **argv) {
         }
         else if ((r = player_handle(&e)) && screen != SCR_BROWSE) {
           if (screen == SCR_OPTIONS) screen = SCR_PLAY;
-          if (r == 1) stop(1);
-          else if (jf_playing && lost_tries < LOST_TRIES) {   // try again in 2, 4, 6, 8, 10 s
-            lost_tries++; retry_at = SDL_GetTicks() + 2000 * lost_tries;
-          } else {   // give up: back to the list, the place kept, not marked as seen
-            int net = jf_playing;   // stop() clears it
-            stop(0);
-            show_toast(net ? "Lost the connection to Jellyfin" : "Couldn't play this file");
-          }
+          if (r == 1) stop(1); else stream_lost("broke off");
         }
         got = SDL_PollEvent(&e);
       }
@@ -1388,14 +1446,26 @@ int main(int argc, char **argv) {
       if (screen == SCR_PLAY && SDL_GetTicks() - last_save > 30000) { save_position(); last_save = SDL_GetTicks(); }
       if (jf_playing && player_active() && SDL_GetTicks() - last_report > 10000) {
         jf_report(1, playing_jf.id, player_pos(), player_paused()); last_report = SDL_GetTicks();
+        if (net_shots) net_log(NULL, "at %.0f s%s", player_pos(), player_buffering() >= 0 ? ", waiting" : "");   // tests only
       }
       if (job_th && SDL_AtomicGet(&job_done)) job_finished();
       if (retry_at && SDL_GetTicks() >= retry_at && !job_th && jf_playing) {   // ask the server again: a fresh URL
         retry_at = 0; playing_jf.pos = player_pos(); jf_play_from_start = 0; start_job(J_PLAY);
       }
+      if (net_reset) {
+        net_reset = 0; net_stalls = net_poor = 0; net_drops0 = wifi_drops();
+        net_log(NULL, "-- next test: warnings reset");
+      }
       if (jf_playing && player_active()) net_watch();
+      // Stuck: waiting for the network for 40 s without getting anywhere (FFmpeg can go on reconnecting quietly, or the
+      // server sends nothing): count it as broken off, so the tries above ask the server again, and give up in the end.
+      static Uint32 stuck_since;
+      if (jf_playing && player_active() && !player_paused() && !retry_at && !job_th && player_buffering() >= 0) {
+        if (!stuck_since) stuck_since = SDL_GetTicks();
+        else if (SDL_GetTicks() - stuck_since > 40000) { stuck_since = 0; stream_lost("stuck waiting"); }
+      } else stuck_since = 0;
       if (lost_tries && !retry_at && player_active() && player_buffering() < 0 && player_pos() > playing_jf.pos + 10)
-        lost_tries = 0;   // playing again for 10 s: a later drop gets five new tries
+        { lost_tries = 0; net_log(NULL, "reconnected, playing for 10 s at %.0f s", player_pos()); }   // a later drop: five new tries
       if (screen == SCR_CONNECT && jf_code[0] && !job_th && SDL_GetTicks() >= next_poll) start_job(J_POLL);
       int fresh = player_active() && player_frame();
       if (player_active() && screen != SCR_BROWSE) leds_follow(player_accent()); else leds_restore();

@@ -19,8 +19,10 @@ i=1; for f in h264-480p.mp4 h264-720p.mp4 hevc-720p.mkv h264-1080p.mp4 hevc-1080
   ln -s ../../../../../../test/$f "$O/videos/Series/Northern/Episode $i · $n.${f##*.}"; i=$((i+1))
 done
 ln -s ../../../../test/h264-480p.mp4 "$O/videos/Northern Lights Timelapse.mp4"
+# Subtitles next to the episode the playing shots use (episode 3, resumed at 42 %): shows the subtitle font works
+printf '1\n00:00:00,000 --> 01:00:00,000\nThe ice had held all winter.\nNow it sang under our boots.\n' > "$O/videos/Series/Northern/Episode 3 · Ice.srt"
 docker run --rm -v "$PWD:/w" -w /w -e SDL_VIDEODRIVER=dummy -e SDL_AUDIODRIVER=dummy nextui-kino-build sh -c "
-mkdir -p $O/pak && cp -r ui/dot/fonts $O/pak/
+mkdir -p $O/pak/mpv/fonts && cp -r ui/dot/fonts $O/pak/ && cp deps/NotoSans-Regular.ttf deps/NotoSans-Bold.ttf $O/pak/mpv/fonts/
 build/out/kino $O/user $O/pak --shots $O $O/videos"
 for f in $O/*.bmp; do ffmpeg -v error -y -i "$f" "${f%.bmp}.png" && rm "$f"; done
 ls $O/*.png

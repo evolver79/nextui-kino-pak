@@ -33,7 +33,8 @@ Screens rendered headless from the app with test clips (`build/shots.sh`).
   weak. When the stream breaks off, Kino reconnects and carries on where it was (five tries); if that fails it goes
   back to the list with your place kept. Wi-Fi power saving is off while a Jellyfin film plays.
 - **While playing:** picture filters (sharpen, warm, cool, black & white, retro CRT), aspect (original, 4:3, 16:9,
-  stretch, zoom), brightness, contrast, deinterlacing, subtitles with a preferred language, and the Brick's lights
+  stretch, zoom), brightness, contrast, deinterlacing, subtitles (in Noto Sans, four sizes, from the film, a file next to it or Jellyfin) with a preferred
+  language, and the Brick's lights
   can follow the colour of the picture.
 
 ## Buttons
@@ -76,6 +77,6 @@ Kino's own code is MIT (`LICENSE`). The Kino program you install is built with F
 mpv, which are GPL, so **the program as a whole is GPL 2 or later**. Its source is this repository: `build/fetch.sh`
 downloads the exact library versions and `build/deps.sh` builds them. The other libraries have their own free licences:
 libass (ISC), FreeType (FreeType License), FriBidi (LGPL 2.1), HarfBuzz (Old MIT) and cJSON (MIT). Every licence is in
-`licenses/`, which also goes into the pak, and the fonts (Doto, Geist) are SIL OFL.
+`licenses/`, which also goes into the pak, and the fonts (Doto and Geist for the screens, Noto Sans for subtitles) are SIL OFL.
 
 Portions of this software are copyright © 2023 The FreeType Project (www.freetype.org). All rights reserved.
