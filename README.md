@@ -57,7 +57,14 @@ In Options, X shows the buttons screen (it also opens on the first start).
 ## Install
 
 Copy `Kino.pak` into `Tools/tg5040/` on the SD card and put videos in `Videos/`. Settings, resume positions and the
-picture cache are kept in NextUI's user data folder (`.userdata/tg5040/Kino`).
+picture cache are kept in NextUI's user data folder (`.userdata/tg5040/Kino`). Kino starts in `Videos`; B there goes
+up to the SD card, where only folders with videos in them show.
+
+## Problems?
+
+Open an [issue](https://github.com/evolver79/nextui-kino-pak/issues) and attach Kino's log: `.userdata/tg5040/logs/Kino.txt`
+on the SD card (the run before is kept as `Kino.prev.txt`, so starting Kino again after a problem doesn't lose it).
+It notes what Kino did with the network and the player; Jellyfin keys are cut out of it.
 
 ## Build
 

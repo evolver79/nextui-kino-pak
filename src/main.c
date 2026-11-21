@@ -18,6 +18,7 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <time.h>
 
 enum { BTN_A = SDL_CONTROLLER_BUTTON_B, BTN_B = SDL_CONTROLLER_BUTTON_A, BTN_X = SDL_CONTROLLER_BUTTON_Y,
        BTN_Y = SDL_CONTROLLER_BUTTON_X, BTN_START = SDL_CONTROLLER_BUTTON_START, BTN_SELECT = SDL_CONTROLLER_BUTTON_BACK,
@@ -1470,6 +1471,8 @@ int main(int argc, char **argv) {
 
   char p[1200]; snprintf(p, sizeof p, "%s/fonts", pak);
   if (!(dot = dot_init(ren, p, DOT_ACCENT_KINO))) { fprintf(stderr, "fonts in %s: %s\n", p, SDL_GetError()); return 1; }
+  { time_t now = time(NULL); char d[32]; strftime(d, sizeof d, "%Y-%m-%d %H:%M", localtime(&now));
+    fprintf(stderr, "Kino %s, %s\n", KINO_VERSION, d); }
   store_open(user);
   jf_load(user);
   if (!shots_dir) { leds_start(); wifi_start(); }
@@ -1523,8 +1526,10 @@ int main(int argc, char **argv) {
       if (screen == SCR_PLAY && SDL_GetTicks() - last_save > 30000) { save_position(); last_save = SDL_GetTicks(); }
       if (jf_playing && player_active() && SDL_GetTicks() - last_report > 10000) {
         jf_report(1, playing_jf.id, player_pos(), player_paused()); last_report = SDL_GetTicks();
-        if (net_test) net_log(NULL, "at %.0f s%s, %.0f s ahead, %ld kB/s in", player_pos(), player_buffering() >= 0 ? ", waiting" : "",
-                              player_cache_secs(), player_net_speed() / 1000);   // tests only
+        static int reports;   // in the log: every 10 s in tests, every minute otherwise (for logs users send in)
+        if (net_test || ++reports % 6 == 0)
+          net_log(NULL, "at %.0f s%s, %.0f s ahead, %ld kB/s in", player_pos(), player_buffering() >= 0 ? ", waiting" : "",
+                  player_cache_secs(), player_net_speed() / 1000);
       }
       if (job_th && SDL_AtomicGet(&job_done)) job_finished();
       if (retry_at && SDL_GetTicks() >= retry_at && !job_th && jf_playing) {   // ask the server again: a fresh URL

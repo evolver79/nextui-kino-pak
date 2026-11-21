@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 static mpv_handle *mpv;
 static mpv_render_context *rctx;
@@ -174,6 +175,25 @@ static void crop_update(const unsigned char *px, int pitch, int w, int h) {
   if (pos != crop_margin) { crop_margin = pos; char m[16]; snprintf(m, sizeof m, "%d", pos); setp("sub-pos", m); }
 }
 
+// Kino's log (NextUI's logs/Kino.txt) is meant to be shared when something goes wrong, so a Jellyfin key in a stream
+// address FFmpeg prints in an error (…&ApiKey=…) is cut out first.
+static void log_redacted(const char *prefix, const char *text) {
+  char out[2048]; size_t n = 0;
+  static const char *keys[] = { "apikey=", "api_key=", "token=", "x-emby-token=" };
+  for (const char *p = text; *p && n < sizeof out - 8; ) {
+    int hit = 0;
+    for (unsigned k = 0; k < sizeof keys / sizeof *keys && !hit; k++)
+      if (!strncasecmp(p, keys[k], strlen(keys[k]))) {
+        size_t l = strlen(keys[k]); memcpy(out + n, p, l); n += l; p += l;
+        while (*p && !strchr("&'\" \n,", *p)) p++;
+        memcpy(out + n, "…", strlen("…")); n += strlen("…"); hit = 1;
+      }
+    if (!hit) out[n++] = *p++;
+  }
+  out[n] = 0;
+  fprintf(stderr, "[%s] %s%s", prefix, out, n && out[n - 1] == '\n' ? "" : "\n");
+}
+
 static void on_wakeup(void *ud) { (void)ud; SDL_Event e = { .type = ev_mpv }; SDL_PushEvent(&e); }
 static void on_update(void *ud) { (void)ud; SDL_Event e = { .type = ev_redraw }; SDL_PushEvent(&e); }
 static void cmd(const char *a, const char *b, const char *c) {
@@ -211,7 +231,7 @@ int player_init(SDL_Renderer *r, int audio, const char *mpv_dir) {
   mpv_set_option_string(mpv, "sub-border-size", "6");
   mpv_set_option_string(mpv, "osd-level", "0");
   mpv_set_option_string(mpv, "input-default-bindings", "no");
-  mpv_set_option_string(mpv, "terminal", "yes");
+  mpv_set_option_string(mpv, "terminal", "no");   // mpv's messages come as events instead: written out with keys hidden
   // Network streams: FFmpeg reconnects by itself after a short drop (it doesn't by default), a read gives up after
   // 15 s instead of 60 so Kino can open the stream again, and playback waits for 3 s of film before it carries on.
   mpv_set_option_string(mpv, "stream-lavf-o", "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=8");
@@ -228,6 +248,7 @@ int player_init(SDL_Renderer *r, int audio, const char *mpv_dir) {
   }
   const char *lv = getenv("KINO_MPV_LOG");   // e.g. "all=warn,vd=v,ffmpeg=v" when looking into a problem
   mpv_set_option_string(mpv, "msg-level", lv && *lv ? lv : "all=warn");
+  mpv_request_log_messages(mpv, lv && *lv ? "v" : "warn");
   if (mpv_initialize(mpv) < 0) return -1;
   mpv_render_param params[] = { { MPV_RENDER_PARAM_API_TYPE, (void *)MPV_RENDER_API_TYPE_SW }, { 0 } };
   if (mpv_render_context_create(&rctx, mpv, params) < 0) return -1;
@@ -310,6 +331,7 @@ int player_handle(SDL_Event *e) {
       mpv_get_property_async(mpv, R_DEC, "current-tracks/video/decoder-desc", MPV_FORMAT_STRING);
     }
     if (me->event_id == MPV_EVENT_PROPERTY_CHANGE) on_property(me->data);
+    if (me->event_id == MPV_EVENT_LOG_MESSAGE) { mpv_event_log_message *m = me->data; log_redacted(m->prefix, m->text); }
     if (me->event_id == MPV_EVENT_GET_PROPERTY_REPLY && me->error >= 0) {
       mpv_event_property *p = me->data;
       if (p->format == MPV_FORMAT_STRING && p->data)
