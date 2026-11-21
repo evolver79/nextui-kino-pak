@@ -7,6 +7,7 @@ brick ping >/dev/null
 build/build.sh
 cp build/out/kino Kino.pak/kino
 rm -rf Kino.pak/fonts && cp -r ui/dot/fonts Kino.pak/fonts
+rm -rf Kino.pak/licenses && cp -r licenses Kino.pak/licenses && cp LICENSE Kino.pak/LICENSE   # the program is GPL: see licenses/README.txt
 brick deploy Kino.pak >/dev/null
 if [ "$1" = --bench ]; then
   brick push $(ls test/*.mp4 test/*.mkv) /mnt/SDCARD/Videos/kino-test >/dev/null

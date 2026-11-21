@@ -72,5 +72,10 @@ with a small private helper.)
 
 ## Licence
 
-MIT. FFmpeg and mpv are LGPL/GPL, libass, FreeType, FriBidi and HarfBuzz have their own free licences, cJSON is MIT,
-and the fonts (Doto, Geist) are SIL OFL.
+Kino's own code is MIT (`LICENSE`). The Kino program you install is built with FFmpeg (with its GPL parts on) and
+mpv, which are GPL, so **the program as a whole is GPL 2 or later**. Its source is this repository: `build/fetch.sh`
+downloads the exact library versions and `build/deps.sh` builds them. The other libraries have their own free licences:
+libass (ISC), FreeType (FreeType License), FriBidi (LGPL 2.1), HarfBuzz (Old MIT) and cJSON (MIT). Every licence is in
+`licenses/`, which also goes into the pak, and the fonts (Doto, Geist) are SIL OFL.
+
+Portions of this software are copyright © 2023 The FreeType Project (www.freetype.org). All rights reserved.
