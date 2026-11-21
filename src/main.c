@@ -1099,17 +1099,20 @@ static void change_option(int dir) {
 // Quitting while a Jellyfin film plays (MENU, or killed by the system): tell the server where it stopped and to stop
 // converting, before Kino is gone. Without it the server went on converting for nobody and the place was the last
 // progress report. Skipped without Wi-Fi (each request would wait 8 s for nothing).
-static void quit_jellyfin(void) {
+// Kino quitting while a Jellyfin film plays: the stop report goes out only after the player is gone (pos taken
+// before), since a player still streaming asks for the next piece and the server starts a new converter for it.
+static double jf_pos_at_quit = -1;   // MENU: where the film was when it closed
+static void quit_jellyfin(double pos) {
   if (!jf_playing) return;
-  if (wifi_state() != WIFI_OFF) jf_report_now(2, playing_jf.id, player_pos());
+  if (wifi_state() != WIFI_OFF) jf_report_now(2, playing_jf.id, pos);
   jf_playing = 0;
   wifi_power_save(1);
 }
 
 static void on_button(int b) {
   if (b == BTN_MENU) {
-    quit_jellyfin();
-    if (player_active()) { save_position(); player_close(); }
+    if (jf_playing) jf_pos_at_quit = player_pos();
+    if (player_active()) { save_position(); player_close(); }   // Jellyfin's stop report: at the end of main
     running = 0; return;
   }
   if (screen == SCR_CONNECT) {
@@ -1499,7 +1502,7 @@ int main(int argc, char **argv) {
       SDL_RenderPresent(ren);
     }
   }
-  quit_jellyfin();   // killed (SIGTERM) or the window closed while a Jellyfin film played
+  double quit_pos = jf_pos_at_quit >= 0 ? jf_pos_at_quit : player_pos();
   if (player_active()) { save_position(); player_close(); }
   leds_restore();
   store_save();
@@ -1508,7 +1511,8 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 32; i++) if (ptex[i].t) SDL_DestroyTexture(ptex[i].t);
   if (crt_tex) SDL_DestroyTexture(crt_tex);
   dot_quit(dot);
-  player_quit();
+  player_quit();   // mpv gone: nothing streams any more
+  quit_jellyfin(quit_pos);
   SDL_Quit();
   return 0;
 }
