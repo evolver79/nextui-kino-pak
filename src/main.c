@@ -8,6 +8,9 @@
 #include "jellyfin.h"
 #include <ctype.h>
 #include <dirent.h>
+#include <execinfo.h>
+#include <pthread.h>
+#include <unistd.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -36,7 +39,7 @@ typedef struct {
 static SDL_Renderer *ren;
 static Dot *dot;
 static int running = 1, screen = SCR_BROWSE, opt_back, opt_sel, opt_resume_play, help_back;
-static char root[1024], cwd[1100];
+static char root[1024], home[1024], cwd[1100];   // root: the SD card; home: its Videos folder, where Kino starts
 static Item *items;
 static int nitems, cursor, top, depth, stack[MAXDEPTH];
 static char playing[1400], playing_title[256];
@@ -56,6 +59,27 @@ static const char *net_shots;   // KINO_SHOTS=<dir>: a screenshot at each warnin
 static int net_test;            // KINO_PLAY set: test/net.sh is driving (the position goes in the log every 10 s)
 static volatile sig_atomic_t net_reset;   // SIGUSR1 (test/net.sh, next scenario): warn again as if a new film
 static void on_usr1(int sig) { (void)sig; net_reset = 1; }
+// Hang watchdog: the main loop not coming round for 15 s writes where it's stuck (backtrace) to the log, once.
+static volatile Uint32 loop_tick;
+static pthread_t main_thread;
+static void on_usr2(int sig) {
+  (void)sig;
+  static const char m[] = "watchdog: main loop stuck 15 s, backtrace:\n";
+  write(2, m, sizeof m - 1);
+  void *bt[48]; int n = backtrace(bt, 48);
+  backtrace_symbols_fd(bt, n, 2);
+}
+static int watchdog(void *u) {
+  (void)u;
+  int dumped = 0;
+  for (;;) {
+    SDL_Delay(1000);
+    Uint32 t = loop_tick, age = SDL_GetTicks() - t;
+    if (t && age > 15000 && !dumped) { dumped = 1; pthread_kill(main_thread, SIGUSR2); }
+    else if (age < 2000 && dumped) { dumped = 0; fprintf(stderr, "watchdog: main loop going again\n"); }
+  }
+  return 0;
+}
 static volatile sig_atomic_t term_asked;   // SIGTERM (the system closing Kino): quit the normal way
 static void on_term(int sig) { (void)sig; term_asked = 1; }
 static void shot(const char *dir, const char *name);
@@ -270,10 +294,34 @@ static void set_cursor(int c) {
   want_media();
 }
 
+// A folder outside Videos is listed only if a film is somewhere in it (a few levels down), so the card's root shows
+// Videos and film folders, not Roms, Bios, Saves and the like.
+static int has_video(const char *dir, int levels, int *budget) {
+  DIR *d = opendir(dir);
+  if (!d) return 0;
+  int found = 0;
+  struct dirent *e;
+  while (!found && (e = readdir(d)) && --*budget > 0) {
+    if (e->d_name[0] == '.') continue;
+    int isdir = e->d_type == DT_DIR;
+    char p[1400]; snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+    if (e->d_type == DT_UNKNOWN) { struct stat st; if (stat(p, &st) != 0) continue; isdir = S_ISDIR(st.st_mode); }
+    if (!isdir) found = is_video(e->d_name);
+    else if (levels > 0) found = has_video(p, levels - 1, budget);
+  }
+  closedir(d);
+  return found;
+}
+
+static int in_home(void) {   // cwd is Videos or a folder in it
+  size_t l = strlen(home);
+  return !strncmp(cwd, home, l) && (!cwd[l] || cwd[l] == '/');
+}
+
 static void list_dir(void) {
   free(items); items = NULL; nitems = 0;
   DIR *d = opendir(cwd);
-  int cap = 0;
+  int cap = 0, outside = !in_home();
   struct dirent *e;
   while (d && (e = readdir(d))) {
     if (e->d_name[0] == '.') continue;
@@ -281,6 +329,7 @@ static void list_dir(void) {
     if (stat(p, &st) != 0) continue;
     int dir = S_ISDIR(st.st_mode);
     if (!dir && !is_video(e->d_name)) continue;
+    if (dir && outside && strcmp(p, home)) { int budget = 4000; if (!has_video(p, 3, &budget)) continue; }
     if (nitems == cap) { cap = cap ? cap * 2 : 64; items = realloc(items, cap * sizeof *items); }
     snprintf(items[nitems].name, sizeof items[nitems].name, "%s", e->d_name);
     items[nitems].mtime = st.st_mtime; items[nitems].cover_set = 0; items[nitems].virt = 0;
@@ -290,7 +339,7 @@ static void list_dir(void) {
   if (nitems) qsort(items, nitems, sizeof *items, item_cmp);
   // Films (not episodes, not a tree of folders) as covers: most entries are videos or folders with a picture.
   local_grid = 0;
-  if (depth > 0 && nitems >= 2) {
+  if (depth > 0 && strcmp(cwd, home) && nitems >= 2) {
     int films = 0, eps = 0; char p[1400], c[1400];
     for (int i = 0; i < nitems; i++) {
       if (looks_episode(items[i].name)) eps++;
@@ -308,7 +357,7 @@ static void list_dir(void) {
     }
     nitems = k;
   }
-  if (!depth && !shots_mode) {   // the SD card root starts with Jellyfin
+  if (!strcmp(cwd, home) && !shots_mode) {   // Videos, where Kino starts, begins with Jellyfin
     items = realloc(items, (nitems + 1) * sizeof *items);
     memmove(items + 1, items, nitems * sizeof *items);
     memset(items, 0, sizeof *items);
@@ -500,9 +549,12 @@ static void enter_dir(void) {
 
 static void leave_dir(void) {
   if (!depth) return;
-  char *s = strrchr(cwd, '/'); if (s) *s = 0;
+  char *s = strrchr(cwd, '/'), left[256] = "";
+  if (s) { snprintf(left, sizeof left, "%s", s + 1); *s = 0; }
   list_dir();
-  set_cursor(stack[--depth]);
+  int c = stack[--depth];   // back on the folder we came out of (found by name: from Videos up, there's no stack entry)
+  for (int i = 0; i < nitems; i++) if (!items[i].virt && !strcmp(items[i].name, left)) { c = i; break; }
+  set_cursor(c);
 }
 
 static void select_path(const char *path) {   // put the cursor on this file if it's in the list
@@ -782,7 +834,8 @@ static void draw_browse(void) {
   dot_ground(dot);
   if (in_grid()) { draw_grid(); return; }
   // Crumb: "SD card / Videos / ...", only the last two folders when it's deeper than that.
-  char crumb[700] = "SD card / Videos", count[32], rel[1100];
+  char crumb[700], count[32], rel[1100];
+  snprintf(crumb, sizeof crumb, strcmp(root, home) ? "SD card" : "SD card / Videos");
   if (jf_mode) {   // "Jellyfin / Shows / Northern"
     snprintf(crumb, sizeof crumb, jf_depth > 2 ? "…" : "Jellyfin");
     for (int i = jf_depth > 2 ? jf_depth - 1 : 1; i <= jf_depth; i++) {
@@ -1394,13 +1447,15 @@ int main(int argc, char **argv) {
   const char *pak = !is_bench && argc > 2 ? argv[2] : ".";
   const char *shots_dir = argc > 5 && !strcmp(argv[3], "--shots") ? argv[4] : NULL;
   mkdir(user, 0755);
-  if (shots_dir) snprintf(root, sizeof root, "%s", argv[5]);
+  if (shots_dir) { snprintf(root, sizeof root, "%s", argv[5]); snprintf(home, sizeof home, "%s", root); }
   else {
     const char *sd = getenv("SDCARD_PATH"); if (!sd || !*sd) sd = "/mnt/SDCARD";
-    snprintf(root, sizeof root, "%s/Videos", sd);
-    mkdir(root, 0755);
+    snprintf(root, sizeof root, "%s", sd);
+    snprintf(home, sizeof home, "%s/Videos", sd);
+    mkdir(home, 0755);
   }
-  snprintf(cwd, sizeof cwd, "%s", root);
+  snprintf(cwd, sizeof cwd, "%s", home);
+  depth = strcmp(home, root) ? 1 : 0;   // in Videos, one level under the card (B goes up to it)
 
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
   SDL_Window *win = SDL_CreateWindow("Kino", 0, 0, W, H, shots_dir ? 0 : SDL_WINDOW_FULLSCREEN);
@@ -1436,8 +1491,12 @@ int main(int argc, char **argv) {
       screen = SCR_BROWSE; play_jf(&it, 0);
     }
     signal(SIGTERM, on_term);
+    { void *w[2]; backtrace(w, 2); }   // loads libgcc now: not safe inside the signal handler
+    signal(SIGUSR2, on_usr2); main_thread = pthread_self();
+    SDL_Thread *wd = SDL_CreateThread(watchdog, "watchdog", NULL); if (wd) SDL_DetachThread(wd);
     int held = -1; Uint32 repeat_at = 0;
     while (running) {
+      loop_tick = SDL_GetTicks();
       SDL_Event e;
       int r, got = SDL_WaitEventTimeout(&e, 33);
       while (got) {
@@ -1502,6 +1561,7 @@ int main(int argc, char **argv) {
       SDL_RenderPresent(ren);
     }
   }
+  loop_tick = 0;   // quitting: blocking on the way out is fine
   double quit_pos = jf_pos_at_quit >= 0 ? jf_pos_at_quit : player_pos();
   if (player_active()) { save_position(); player_close(); }
   leds_restore();

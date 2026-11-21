@@ -13,7 +13,7 @@ export PKG_CONFIG_PATH=/w/build/out/prefix/lib/pkgconfig
 gcc -O2 -Wall -o build/out/kino src/*.c src/vendor/cJSON.c ui/dot/src/dot.c -Iui/dot/src -Ibuild/out/prefix/include \$(pkg-config --cflags sdl2) \
   -Lbuild/out/prefix/lib -lmpv -lass -lharfbuzz -lfribidi -lfreetype -lavfilter -lpostproc -lavformat -lavcodec -lswresample -lswscale -lavutil \
   \$(pkg-config --libs sdl2) -lSDL2_ttf -lz -lstdc++ -latomic -lpthread -ldl -lrt -lm
-strip build/out/kino
+cp build/out/kino build/out/kino.debug; strip build/out/kino
 ls -la build/out/kino
 echo needs: \$(objdump -p build/out/kino | grep NEEDED | tr -s ' ' | cut -d' ' -f3 | tr '\n' ' ')
 "
