@@ -4,6 +4,7 @@
 #include <mpv/client.h>
 #include <mpv/render.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,89 @@ static Uint32 ev_mpv, ev_redraw, accent = 0xff6a2b;
 static char sub_label[64];
 static char pend_url[12][700], pend_title[12][96], pend_lang[12][16];
 static int npend;
+
+// mpv's state as it last told it (observed properties, delivered as events on Kino's own thread). Kino never asks mpv
+// and waits: a property read or command waits for mpv's core thread, and when that stalls (a network cut, the video
+// engine) the whole UI froze with it, buttons and quitting included.
+enum { O_POS = 1, O_DUR, O_WAIT, O_IDLE, O_PAUSE, O_BUFPCT, O_CEND, O_SPEED, O_CDUR, O_DW, O_DH, O_IL, O_SID, O_SLANG, O_SNUM,
+       O_TRACKS, R_DEC = 100, R_CODEC };
+static struct { double pos, dur, cend, cdur; int wait, idle, pause, il; int64_t bufpct, speed, dw, dh; int subs;
+                char sid[16], slang[16], snum[16]; } o;
+static void o_reset(void) {   // a file opening: nothing known yet, "opening" (core idle, not paused)
+  int pause = o.pause, subs = o.subs;
+  memset(&o, 0, sizeof o); o.pos = o.dur = o.cend = o.cdur = -1; o.idle = 1; o.pause = pause; o.subs = subs;
+  snprintf(o.sid, sizeof o.sid, "no");
+}
+static void setp(const char *name, const char *val) {   // set a property without waiting for mpv
+  char *v = (char *)val; mpv_set_property_async(mpv, 0, name, MPV_FORMAT_STRING, &v);
+}
+static void on_property(mpv_event_property *p) {
+  int have = p->format != MPV_FORMAT_NONE && p->data;
+  double d = have && p->format == MPV_FORMAT_DOUBLE ? *(double *)p->data : -1;
+  int64_t i = have && p->format == MPV_FORMAT_INT64 ? *(int64_t *)p->data : 0;
+  int f = have && p->format == MPV_FORMAT_FLAG ? *(int *)p->data : 0;
+  const char *str = have && p->format == MPV_FORMAT_STRING ? *(char **)p->data : "";
+  if (!strcmp(p->name, "time-pos")) o.pos = d;
+  else if (!strcmp(p->name, "duration")) o.dur = d;
+  else if (!strcmp(p->name, "paused-for-cache")) o.wait = f;
+  else if (!strcmp(p->name, "core-idle")) o.idle = f;
+  else if (!strcmp(p->name, "pause")) o.pause = f;
+  else if (!strcmp(p->name, "cache-buffering-state")) o.bufpct = i;
+  else if (!strcmp(p->name, "demuxer-cache-time")) o.cend = d;
+  else if (!strcmp(p->name, "cache-speed")) o.speed = i;
+  else if (!strcmp(p->name, "demuxer-cache-duration")) o.cdur = d;
+  else if (!strcmp(p->name, "dwidth")) o.dw = i;
+  else if (!strcmp(p->name, "dheight")) o.dh = i;
+  else if (!strcmp(p->name, "sid")) snprintf(o.sid, sizeof o.sid, "%s", have ? str : "no");
+  else if (!strcmp(p->name, "current-tracks/sub/lang")) snprintf(o.slang, sizeof o.slang, "%s", str);
+  else if (!strcmp(p->name, "current-tracks/sub/id")) snprintf(o.snum, sizeof o.snum, "%s", str);
+  else if (!strcmp(p->name, "track-list") && have && p->format == MPV_FORMAT_NODE) {
+    mpv_node *n = p->data; int subs = 0;
+    if (n->format == MPV_FORMAT_NODE_ARRAY)
+      for (int k = 0; k < n->u.list->num; k++) {
+        mpv_node *t = &n->u.list->values[k];
+        if (t->format != MPV_FORMAT_NODE_MAP) continue;
+        for (int j = 0; j < t->u.list->num; j++)
+          if (!strcmp(t->u.list->keys[j], "type") && t->u.list->values[j].format == MPV_FORMAT_STRING &&
+              !strcmp(t->u.list->values[j].u.string, "sub")) subs++;
+      }
+    o.subs = subs;
+  } else if (!strcmp(p->name, "video-frame-info/interlaced")) {
+    o.il = f;   // mpv 0.35 has no deinterlace "auto": on when the picture says it's interlaced
+    if (f && active && settings.deint == DEINT_AUTO && !deint_checked) { deint_checked = 1; setp("deinterlace", "yes"); }
+  }
+}
+static void observe(void) {
+  static const struct { const char *n; mpv_format f; } p[] = {
+    { "time-pos", MPV_FORMAT_DOUBLE }, { "duration", MPV_FORMAT_DOUBLE }, { "paused-for-cache", MPV_FORMAT_FLAG },
+    { "core-idle", MPV_FORMAT_FLAG }, { "pause", MPV_FORMAT_FLAG }, { "cache-buffering-state", MPV_FORMAT_INT64 },
+    { "demuxer-cache-time", MPV_FORMAT_DOUBLE }, { "cache-speed", MPV_FORMAT_INT64 },
+    { "demuxer-cache-duration", MPV_FORMAT_DOUBLE }, { "dwidth", MPV_FORMAT_INT64 }, { "dheight", MPV_FORMAT_INT64 },
+    { "video-frame-info/interlaced", MPV_FORMAT_FLAG }, { "sid", MPV_FORMAT_STRING },
+    { "current-tracks/sub/lang", MPV_FORMAT_STRING }, { "current-tracks/sub/id", MPV_FORMAT_STRING },
+    { "track-list", MPV_FORMAT_NODE } };
+  for (unsigned k = 0; k < sizeof p / sizeof *p; k++) mpv_observe_property(mpv, k + 1, p[k].n, p[k].f);
+}
+
+// The probe: a thread of its own asks mpv something every 2 s and logs when mpv's core takes long to answer, so a
+// stall shows in the log (Kino itself carries on regardless). Holds probe_lock while asking: mpv isn't freed under it.
+static pthread_mutex_t probe_lock = PTHREAD_MUTEX_INITIALIZER;
+static volatile int probe_stop;
+static int probe(void *u) {
+  (void)u;
+  while (!probe_stop) {
+    SDL_Delay(2000);
+    pthread_mutex_lock(&probe_lock);
+    if (mpv && !probe_stop) {
+      Uint32 t0 = SDL_GetTicks(); double v;
+      mpv_get_property(mpv, "time-pos", MPV_FORMAT_DOUBLE, &v);
+      Uint32 took = SDL_GetTicks() - t0;
+      if (took > 3000) fprintf(stderr, "probe: mpv's core took %.1f s to answer\n", took / 1000.0);
+    }
+    pthread_mutex_unlock(&probe_lock);
+  }
+  return 0;
+}
 
 // --- No bars (an aspect choice; Zoom does it too): a film often carries its own bars (a 2.39:1 film in a 16:9 file), dark grey rather than the
 // black Kino draws around the picture, so the edge shows two blacks. A few times a second the frame mpv just drew
@@ -56,6 +140,9 @@ static int crop_detect(const unsigned char *px, int pitch, int w, int h, Crop *c
   while (l < w / 3 && crop_col_black(px, pitch, l, t, h - b)) l++;
   while (r < w / 3 && crop_col_black(px, pitch, w - 1 - r, t, h - b)) r++;
   int v = t < b ? t : b, hz = l < r ? l : r;
+  // Real bars are thinner than a fifth (2.76:1 in a 16:9 file: 18 % top and bottom; 4:3 in 16:9: 12.5 % a side).
+  // More is a dark frame with something in the middle (a studio logo, titles): it says nothing about bars.
+  if (v > h / 5 || hz > w / 5) return -1;
   if (v < h / 50) v = 0;
   if (hz < w / 50) hz = 0;
   c->t = c->b = v & ~1; c->l = c->r = hz & ~1;
@@ -84,7 +171,7 @@ static void crop_update(const unsigned char *px, int pitch, int w, int h) {
   // subtitles: up out of the bottom bar (sub-pos: where they sit, in % of the frame's height from the top; 100 is mpv's
   // bottom. sub-margin-y would be neater, but a loaded .srt keeps the margin it was opened with)
   int pos = 100 - (crop_h ? (crop_on.b * 100 + crop_h - 1) / crop_h : 0);
-  if (pos != crop_margin) { crop_margin = pos; char m[16]; snprintf(m, sizeof m, "%d", pos); mpv_set_property_string(mpv, "sub-pos", m); }
+  if (pos != crop_margin) { crop_margin = pos; char m[16]; snprintf(m, sizeof m, "%d", pos); setp("sub-pos", m); }
 }
 
 static void on_wakeup(void *ud) { (void)ud; SDL_Event e = { .type = ev_mpv }; SDL_PushEvent(&e); }
@@ -144,17 +231,36 @@ int player_init(SDL_Renderer *r, int audio, const char *mpv_dir) {
   if (mpv_initialize(mpv) < 0) return -1;
   mpv_render_param params[] = { { MPV_RENDER_PARAM_API_TYPE, (void *)MPV_RENDER_API_TYPE_SW }, { 0 } };
   if (mpv_render_context_create(&rctx, mpv, params) < 0) return -1;
+  observe(); o_reset();
   mpv_set_wakeup_callback(mpv, on_wakeup, NULL);
+  SDL_Thread *pt = SDL_CreateThread(probe, "mpv-probe", NULL); if (pt) SDL_DetachThread(pt);
   mpv_render_context_set_update_callback(rctx, on_update, NULL);
   player_apply_settings();
   return 0;
 }
 
-void player_quit(void) {
+// Freeing mpv waits for its core; a stuck core would keep Kino from ever quitting. So it's done on a thread given 3 s.
+static SDL_atomic_t freed;
+static int free_mpv(void *u) {
+  (void)u;
+  pthread_mutex_lock(&probe_lock);   // the probe isn't in a call
   if (rctx) mpv_render_context_free(rctx);
   if (mpv) mpv_terminate_destroy(mpv);
+  rctx = NULL; mpv = NULL;
+  pthread_mutex_unlock(&probe_lock);
+  SDL_AtomicSet(&freed, 1);
+  return 0;
+}
+void player_quit(void) {
+  probe_stop = 1;
+  SDL_Thread *t = SDL_CreateThread(free_mpv, "mpv-free", NULL);
+  if (t) {
+    SDL_DetachThread(t);
+    for (int i = 0; i < 300 && !SDL_AtomicGet(&freed); i++) SDL_Delay(10);
+    if (!SDL_AtomicGet(&freed)) fprintf(stderr, "mpv didn't close in 3 s: left as it is\n");
+  }
   if (tex) SDL_DestroyTexture(tex);
-  rctx = NULL; mpv = NULL; tex = NULL;
+  tex = NULL;
 }
 
 void player_add_sub(const char *url, const char *title, const char *lang) {
@@ -170,7 +276,8 @@ void player_open(const char *path, double start) {
   player_apply_settings();
   if (loaded && !stopping) replaced++;   // the open one ends with STOP first (after a stop, that end is the stop's)
   const char *v[] = { "loadfile", path, "replace", opt, NULL };
-  mpv_command(mpv, v);
+  mpv_command_async(mpv, 0, v);
+  o_reset();
   active = 1; stopping = 0; frames = 0; deint_checked = 0; crop_reset();
   last_pos = start > 0 ? start : 0; last_dur = 0;
   accent = 0xff6a2b;
@@ -179,8 +286,7 @@ void player_open(const char *path, double start) {
 void player_close(void) {
   if (!active) return;
   stopping = 1; active = 0;
-  const char *v[] = { "stop", NULL };
-  mpv_command(mpv, v);
+  cmd("stop", NULL, NULL);
 }
 
 int player_active(void) { return active; }
@@ -197,13 +303,17 @@ int player_handle(SDL_Event *e) {
     if (me->event_id == MPV_EVENT_FILE_LOADED) {
       for (int i = 0; i < npend; i++) {   // the server's subtitle files; "auto" lets slang pick as usual
         const char *v[] = { "sub-add", pend_url[i], "auto", pend_title[i], pend_lang[i], NULL };
-        mpv_command(mpv, v);
+        mpv_command_async(mpv, 0, v);
       }
       npend = 0;
-      char *dec = mpv_get_property_string(mpv, "current-tracks/video/decoder-desc");
-      char *codec = mpv_get_property_string(mpv, "video-codec");
-      fprintf(stderr, "video: %s, decoder %s\n", codec ? codec : "?", dec ? dec : "?");
-      mpv_free(dec); mpv_free(codec);
+      mpv_get_property_async(mpv, R_CODEC, "video-codec", MPV_FORMAT_STRING);
+      mpv_get_property_async(mpv, R_DEC, "current-tracks/video/decoder-desc", MPV_FORMAT_STRING);
+    }
+    if (me->event_id == MPV_EVENT_PROPERTY_CHANGE) on_property(me->data);
+    if (me->event_id == MPV_EVENT_GET_PROPERTY_REPLY && me->error >= 0) {
+      mpv_event_property *p = me->data;
+      if (p->format == MPV_FORMAT_STRING && p->data)
+        fprintf(stderr, me->reply_userdata == R_CODEC ? "video: %s" : ", decoder %s\n", *(char **)p->data);
     }
     if (me->event_id == MPV_EVENT_END_FILE) {
       mpv_event_end_file *ef = me->data;
@@ -224,9 +334,7 @@ int player_frame(void) {
   if (!pending) return 0;
   pending = 0;
   if (!(mpv_render_context_update(rctx) & MPV_RENDER_UPDATE_FRAME)) return 0;
-  int64_t vw = 0, vh = 0;
-  mpv_get_property(mpv, "dwidth", MPV_FORMAT_INT64, &vw);
-  mpv_get_property(mpv, "dheight", MPV_FORMAT_INT64, &vh);
+  int64_t vw = o.dw, vh = o.dh;
   if (vw <= 0 || vh <= 0) return 0;
   int fw = W, fh = (int)(W * vh / vw);
   if (fh > H) { fh = H; fw = (int)(H * vw / vh); }
@@ -243,17 +351,10 @@ int player_frame(void) {
   mpv_render_param rp[] = { { MPV_RENDER_PARAM_SW_SIZE, size }, { MPV_RENDER_PARAM_SW_FORMAT, "bgr0" },
                             { MPV_RENDER_PARAM_SW_STRIDE, &stride }, { MPV_RENDER_PARAM_SW_POINTER, px }, { 0 } };
   mpv_render_context_render(rctx, rp);
-  if (frames % 24 == 0) { player_pos(); player_duration(); }
   if (frames++ % 48 == 0) accent = media_accent_of(px, tw, th, pitch, 1);
   crop_update(px, pitch, tw, th);
   SDL_UnlockTexture(tex);
   mpv_render_context_report_swap(rctx);
-  if (!deint_checked && settings.deint == DEINT_AUTO) {   // mpv 0.35 has no "auto": look at the first frame
-    int il = 0;
-    deint_checked = 1;
-    if (mpv_get_property(mpv, "video-frame-info/interlaced", MPV_FORMAT_FLAG, &il) >= 0 && il)
-      mpv_set_property_string(mpv, "deinterlace", "yes");
-  }
   return 1;
 }
 
@@ -273,37 +374,24 @@ SDL_Texture *player_texture(SDL_Rect *src, SDL_Rect *d) {
 }
 
 double player_pos(void) {
-  double v = 0;
-  if (active && mpv_get_property(mpv, "time-pos", MPV_FORMAT_DOUBLE, &v) >= 0 && v > 0) last_pos = v;
+  if (active && o.pos > 0) last_pos = o.pos;
   return last_pos;
 }
 double player_duration(void) {
-  double v = 0;
-  if (active && mpv_get_property(mpv, "duration", MPV_FORMAT_DOUBLE, &v) >= 0 && v > 0) last_dur = v;
+  if (active && o.dur > 0) last_dur = o.dur;
   return last_dur;
 }
 int player_buffering(void) {   // -1: playing normally; else how full the buffer is before playback carries on, 0-100
   if (!active) return -1;
-  int waiting = 0, idle = 0, paused = 0; int64_t pct = 0;
-  mpv_get_property(mpv, "paused-for-cache", MPV_FORMAT_FLAG, &waiting);
-  mpv_get_property(mpv, "core-idle", MPV_FORMAT_FLAG, &idle);
-  mpv_get_property(mpv, "pause", MPV_FORMAT_FLAG, &paused);
-  if (!waiting && !(idle && !paused)) return -1;   // core-idle while not paused: opening or seeking, no picture yet
-  if (!waiting) return 101;                         // opening or seeking: waiting for the server, no percentage
-  mpv_get_property(mpv, "cache-buffering-state", MPV_FORMAT_INT64, &pct);
-  return pct < 0 ? 0 : pct > 100 ? 100 : (int)pct;
+  if (!o.wait && !(o.idle && !o.pause)) return -1;   // core-idle while not paused: opening or seeking, no picture yet
+  if (!o.wait) return 101;                           // opening or seeking: waiting for the server, no percentage
+  return o.bufpct < 0 ? 0 : o.bufpct > 100 ? 100 : (int)o.bufpct;
 }
-double player_cache_end(void) {   // the film time the read-ahead reaches (it moves on while data arrives; -1 unknown)
-  double v = -1; if (active) mpv_get_property(mpv, "demuxer-cache-time", MPV_FORMAT_DOUBLE, &v); return v;
-}
-long player_net_speed(void) {   // bytes a second coming in from the network right now (mpv's cache-speed)
-  int64_t v = 0; if (active) mpv_get_property(mpv, "cache-speed", MPV_FORMAT_INT64, &v); return (long)v;
-}
-double player_cache_secs(void) {   // how much film is read ahead, in seconds (-1: unknown)
-  double v = -1; if (active) mpv_get_property(mpv, "demuxer-cache-duration", MPV_FORMAT_DOUBLE, &v); return v;
-}
-int player_paused(void) { int v = 0; mpv_get_property(mpv, "pause", MPV_FORMAT_FLAG, &v); return v; }
-void player_pause(int on) { int v = on; mpv_set_property_async(mpv, 0, "pause", MPV_FORMAT_FLAG, &v); }
+double player_cache_end(void) { return active ? o.cend : -1; }   // the film time the read-ahead reaches (-1 unknown)
+long player_net_speed(void) { return active ? (long)o.speed : 0; }   // bytes/s coming in (mpv's cache-speed)
+double player_cache_secs(void) { return active ? o.cdur : -1; }   // how much film is read ahead, in seconds (-1 unknown)
+int player_paused(void) { return o.pause; }
+void player_pause(int on) { int v = on; o.pause = on; mpv_set_property_async(mpv, 0, "pause", MPV_FORMAT_FLAG, &v); }
 void player_seek(double rel) { char s[32]; snprintf(s, sizeof s, "%.1f", rel); cmd("seek", s, "relative"); }
 void player_seek_to(double pos) { char s[32]; snprintf(s, sizeof s, "%.1f", pos); cmd("seek", s, "absolute"); }
 Uint32 player_accent(void) { return accent; }
@@ -333,27 +421,17 @@ void player_apply_settings(void) {
   #undef ADD
   char vf[700] = "";
   if (n) snprintf(vf, sizeof vf, "lavfi=[%s]", g);
-  mpv_set_property_string(mpv, "vf", vf);
-  mpv_set_property_string(mpv, "deinterlace", settings.deint == DEINT_ON ? "yes" : "no");
+  setp("vf", vf);
+  setp("deinterlace", settings.deint == DEINT_ON ? "yes" : "no");
   if (settings.deint == DEINT_AUTO) deint_checked = 0;
-  mpv_set_property_string(mpv, "sub-visibility", settings.subs ? "yes" : "no");
+  setp("sub-visibility", settings.subs ? "yes" : "no");
   char sc[16]; snprintf(sc, sizeof sc, "%.2f", SUBSIZE_SCALE[settings.subsize]);
-  mpv_set_property_string(mpv, "sub-scale", sc);
-  mpv_set_property_string(mpv, "slang", PREFER_LANGS[settings.prefer]);
-  mpv_set_property_string(mpv, "vd", settings.hwdec ? "h264_cedar,hevc_cedar" : "");   // next file
+  setp("sub-scale", sc);
+  setp("slang", PREFER_LANGS[settings.prefer]);
+  setp("vd", settings.hwdec ? "h264_cedar,hevc_cedar" : "");   // next file
 }
 
-int player_sub_tracks(void) {
-  int64_t n = 0, subs = 0;
-  mpv_get_property(mpv, "track-list/count", MPV_FORMAT_INT64, &n);
-  for (int i = 0; i < n; i++) {
-    char k[48]; snprintf(k, sizeof k, "track-list/%d/type", i);
-    char *t = mpv_get_property_string(mpv, k);
-    if (t && !strcmp(t, "sub")) subs++;
-    mpv_free(t);
-  }
-  return (int)subs;
-}
+int player_sub_tracks(void) { return o.subs; }
 
 const char *player_sub_label(void) {
   static const char *names[][2] = { { "eng", "ENGLISH" }, { "en", "ENGLISH" }, { "nor", "NORSK" }, { "nob", "NORSK" },
@@ -361,12 +439,9 @@ const char *player_sub_label(void) {
     { "ger", "DEUTSCH" }, { "deu", "DEUTSCH" }, { "de", "DEUTSCH" }, { "fre", "FRANÇAIS" }, { "fra", "FRANÇAIS" },
     { "fr", "FRANÇAIS" }, { "spa", "ESPAÑOL" }, { "es", "ESPAÑOL" } };
   if (!active) return "AUTO";
-  char *sid = mpv_get_property_string(mpv, "sid");
-  int off = !sid || !strcmp(sid, "no") || !strcmp(sid, "auto");
-  mpv_free(sid);
+  int off = !o.sid[0] || !strcmp(o.sid, "no") || !strcmp(o.sid, "auto");
   if (off) return player_sub_tracks() ? "OFF" : "NONE";
-  char *lang = mpv_get_property_string(mpv, "current-tracks/sub/lang");
-  char *id = mpv_get_property_string(mpv, "current-tracks/sub/id");
+  const char *lang = o.slang[0] ? o.slang : NULL, *id = o.snum[0] ? o.snum : NULL;
   snprintf(sub_label, sizeof sub_label, "TRACK %s", id ? id : "?");
   for (unsigned i = 0; lang && i < sizeof names / sizeof *names; i++)
     if (!strcmp(lang, names[i][0])) { snprintf(sub_label, sizeof sub_label, "%s", names[i][1]); break; }
@@ -374,13 +449,11 @@ const char *player_sub_label(void) {
     snprintf(sub_label, sizeof sub_label, "%s", lang);
     for (char *p = sub_label; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
   }
-  mpv_free(lang); mpv_free(id);
   return sub_label;
 }
 
 void player_cycle_sub(int dir) {
-  const char *v[] = { "cycle", "sub", dir < 0 ? "down" : "up", NULL };
-  mpv_command(mpv, v);
+  cmd("cycle", "sub", dir < 0 ? "down" : "up");
 }
 
 void player_report(const char *file, double secs, long shown, double cpu) {
