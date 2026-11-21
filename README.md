@@ -11,7 +11,7 @@ from the Greek *kínēma*, movement, by way of the cinematograph.
 <img src="docs/screens/browse-series.png" width="49%" alt="Browsing a series: the selected episode's picture, facts and resume time on the left, the episodes as rows on the right">
 <img src="docs/screens/local-grid.png" width="49%" alt="A folder of films as covers, made from frames of the films or a picture next to them">
 <img src="docs/screens/playing.png" width="49%" alt="Playing, paused: the time in dot-matrix numbers, rewind, play and forward, and a dotted progress bar">
-<img src="docs/screens/options-quality.png" width="49%" alt="Options: aspect, picture, subtitles and Brick settings in four cards">
+<img src="docs/screens/options.png" width="49%" alt="Options: aspect, picture, subtitles and Brick settings in four cards">
 <img src="docs/screens/jellyfin-connect.png" width="49%" alt="Jellyfin Quick Connect: a six-digit code to approve in the Jellyfin app">
 <img src="docs/screens/help-first-start.png" width="49%" alt="The buttons screen shown on the first start">
 </p>
@@ -33,9 +33,9 @@ Screens rendered headless from the app with test clips (`build/shots.sh`).
   weak. When the stream breaks off, Kino reconnects and carries on where it was (five tries); if that fails it goes
   back to the list with your place kept. Wi-Fi power saving is off while a Jellyfin film plays.
 - **While playing:** picture filters (sharpen, warm, cool, black & white, retro CRT), aspect (original, 4:3, 16:9,
-  stretch, zoom), brightness, contrast, deinterlacing, subtitles (in Noto Sans, four sizes, from the film, a file next to it or Jellyfin) with a preferred
-  language, and the Brick's lights
-  can follow the colour of the picture.
+  stretch, zoom, or no bars: the film's own black bars cut away, so only pure black surrounds the picture), brightness
+  (it keeps black black), contrast, deinterlacing, subtitles (in Noto Sans, four sizes, from the film, a file next to
+  it or Jellyfin) with a preferred language, and the Brick's lights can follow the colour of the picture.
 
 ## Buttons
 

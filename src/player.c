@@ -3,6 +3,7 @@
 #include "kino.h"
 #include <mpv/client.h>
 #include <mpv/render.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,11 +13,79 @@ static mpv_render_context *rctx;
 static SDL_Renderer *ren;
 static SDL_Texture *tex;
 static int tw, th, active, pending, stopping, frames, deint_checked;
+// A file mpv has open (start to end), and how many "stopped" ends to ignore: opening a file while one is open (a
+// reconnect asks the server for a fresh stream and opens it over the old) makes mpv end the old one with STOP, which
+// must not count as the new film ending: that marked it watched and went back to the list.
+static int loaded, replaced;
 static double last_pos, last_dur;   // kept while playing: still known after the stream has broken off
 static Uint32 ev_mpv, ev_redraw, accent = 0xff6a2b;
 static char sub_label[64];
 static char pend_url[12][700], pend_title[12][96], pend_lang[12][16];
 static int npend;
+
+// --- No bars (an aspect choice; Zoom does it too): a film often carries its own bars (a 2.39:1 film in a 16:9 file), dark grey rather than the
+// black Kino draws around the picture, so the edge shows two blacks. A few times a second the frame mpv just drew
+// (the whole frame: bars and subtitles too) is sampled; a crop that holds for 4 s is taken, one that shows less bar
+// within 0.5 s (an IMAX scene opening up to the full frame). Kino then draws only the inside, and moves the
+// subtitles up out of the bottom bar by as much. Sides are cut evenly by the smaller bar; the bottom bar is judged
+// on its outer fifths only, where subtitles never are. Same rules as Tuner's.
+typedef struct { int l, r, t, b; } Crop;
+static Crop crop_on, crop_cand; static int crop_n, crop_w, crop_h, crop_margin = -1; static Uint32 crop_at;   // crop_margin: sub-pos set
+#define CROP_LIT 3   // samples of 48 that may be bright in a bar (a logo, noise)
+static int crop_px_lit(const unsigned char *p) { return p[0] + p[1] + p[2] > 3 * 36; }   // bgr0
+static int crop_row_black(const unsigned char *px, int pitch, int y, int x0, int x1) {
+  int lit = 0;
+  for (int i = 0; i < 48; i++) if (crop_px_lit(px + y * pitch + 4 * (x0 + (x1 - x0 - 1) * i / 47)) && ++lit > CROP_LIT) return 0;
+  return 1;
+}
+static int crop_row_black_edges(const unsigned char *px, int pitch, int y, int w) {   // outer fifths only
+  return crop_row_black(px, pitch, y, 0, w / 5) && crop_row_black(px, pitch, y, w - w / 5, w);
+}
+static int crop_col_black(const unsigned char *px, int pitch, int x, int y0, int y1) {
+  int lit = 0;
+  for (int i = 0; i < 48; i++) if (crop_px_lit(px + (y0 + (y1 - y0 - 1) * i / 47) * pitch + 4 * x) && ++lit > CROP_LIT) return 0;
+  return 1;
+}
+static int crop_detect(const unsigned char *px, int pitch, int w, int h, Crop *c) {
+  int lit = 0;   // a black or nearly black frame (a fade, a night scene) says nothing
+  for (int gy = 1; gy < 16; gy++) for (int gx = 1; gx < 16; gx++) lit += crop_px_lit(px + (h * gy / 16) * pitch + 4 * (w * gx / 16));
+  if (lit < 8) return -1;
+  int t = 0, b = 0, l = 0, r = 0;
+  while (t < h / 3 && crop_row_black(px, pitch, t, 0, w)) t++;
+  while (b < h / 3 && crop_row_black_edges(px, pitch, h - 1 - b, w)) b++;
+  while (l < w / 3 && crop_col_black(px, pitch, l, t, h - b)) l++;
+  while (r < w / 3 && crop_col_black(px, pitch, w - 1 - r, t, h - b)) r++;
+  int v = t < b ? t : b, hz = l < r ? l : r;
+  if (v < h / 50) v = 0;
+  if (hz < w / 50) hz = 0;
+  c->t = c->b = v & ~1; c->l = c->r = hz & ~1;
+  return 0;
+}
+static int crop_close(int a, int b, int dim) { int tol = dim / 100 > 2 ? dim / 100 : 2; return abs(a - b) <= tol; }
+static void crop_reset(void) { memset(&crop_on, 0, sizeof crop_on); memset(&crop_cand, 0, sizeof crop_cand); crop_n = 0; crop_w = crop_h = 0; }
+static void crop_update(const unsigned char *px, int pitch, int w, int h) {
+  if (!ASPECT_CROPS(settings.aspect)) { if (crop_on.t || crop_on.l) crop_reset(); }
+  else {
+    if (w != crop_w || h != crop_h) { crop_reset(); crop_w = w; crop_h = h; }   // another file, or the CRT filter
+    Uint32 now = SDL_GetTicks();
+    Crop d;
+    if (now - crop_at >= 250 && (crop_at = now, crop_detect(px, pitch, w, h, &d) == 0)) {
+      if (crop_close(d.l, crop_cand.l, w) && crop_close(d.t, crop_cand.t, h)) crop_n++;
+      else { crop_cand = d; crop_n = 1; }
+      int less = (crop_cand.l < crop_on.l && !crop_close(crop_cand.l, crop_on.l, w)) ||
+                 (crop_cand.t < crop_on.t && !crop_close(crop_cand.t, crop_on.t, h));
+      int same = crop_close(crop_cand.l, crop_on.l, w) && crop_close(crop_cand.t, crop_on.t, h);
+      if (less ? crop_n >= 2 : !same && crop_n >= 16) {
+        crop_on = crop_cand;
+        fprintf(stderr, "crop: %dx%d -> %dx%d\n", w, h, w - crop_on.l - crop_on.r, h - crop_on.t - crop_on.b);
+      }
+    }
+  }
+  // subtitles: up out of the bottom bar (sub-pos: where they sit, in % of the frame's height from the top; 100 is mpv's
+  // bottom. sub-margin-y would be neater, but a loaded .srt keeps the margin it was opened with)
+  int pos = 100 - (crop_h ? (crop_on.b * 100 + crop_h - 1) / crop_h : 0);
+  if (pos != crop_margin) { crop_margin = pos; char m[16]; snprintf(m, sizeof m, "%d", pos); mpv_set_property_string(mpv, "sub-pos", m); }
+}
 
 static void on_wakeup(void *ud) { (void)ud; SDL_Event e = { .type = ev_mpv }; SDL_PushEvent(&e); }
 static void on_update(void *ud) { (void)ud; SDL_Event e = { .type = ev_redraw }; SDL_PushEvent(&e); }
@@ -99,9 +168,10 @@ void player_add_sub(const char *url, const char *title, const char *lang) {
 void player_open(const char *path, double start) {
   char opt[64]; snprintf(opt, sizeof opt, "start=%.1f,pause=no", start > 0 ? start : 0);
   player_apply_settings();
+  if (loaded && !stopping) replaced++;   // the open one ends with STOP first (after a stop, that end is the stop's)
   const char *v[] = { "loadfile", path, "replace", opt, NULL };
   mpv_command(mpv, v);
-  active = 1; stopping = 0; frames = 0; deint_checked = 0;
+  active = 1; stopping = 0; frames = 0; deint_checked = 0; crop_reset();
   last_pos = start > 0 ? start : 0; last_dur = 0;
   accent = 0xff6a2b;
 }
@@ -123,6 +193,7 @@ int player_handle(SDL_Event *e) {
   for (;;) {
     mpv_event *me = mpv_wait_event(mpv, 0);
     if (me->event_id == MPV_EVENT_NONE) break;
+    if (me->event_id == MPV_EVENT_START_FILE) loaded = 1;
     if (me->event_id == MPV_EVENT_FILE_LOADED) {
       for (int i = 0; i < npend; i++) {   // the server's subtitle files; "auto" lets slang pick as usual
         const char *v[] = { "sub-add", pend_url[i], "auto", pend_title[i], pend_lang[i], NULL };
@@ -136,7 +207,9 @@ int player_handle(SDL_Event *e) {
     }
     if (me->event_id == MPV_EVENT_END_FILE) {
       mpv_event_end_file *ef = me->data;
-      if (ef->reason == MPV_END_FILE_REASON_STOP && stopping) stopping = 0;
+      loaded = 0;
+      if (ef->reason == MPV_END_FILE_REASON_STOP && replaced) { replaced--; fprintf(stderr, "end of file: the old stream, replaced\n"); }
+      else if (ef->reason == MPV_END_FILE_REASON_STOP && stopping) stopping = 0;
       else if (active && ef->reason != MPV_END_FILE_REASON_REDIRECT) {
         int early = ef->reason == MPV_END_FILE_REASON_EOF && last_dur > 0 && last_pos < last_dur - 20;
         active = 0; ended = ef->reason == MPV_END_FILE_REASON_ERROR || early ? 2 : 1;
@@ -172,6 +245,7 @@ int player_frame(void) {
   mpv_render_context_render(rctx, rp);
   if (frames % 24 == 0) { player_pos(); player_duration(); }
   if (frames++ % 48 == 0) accent = media_accent_of(px, tw, th, pitch, 1);
+  crop_update(px, pitch, tw, th);
   SDL_UnlockTexture(tex);
   mpv_render_context_report_swap(rctx);
   if (!deint_checked && settings.deint == DEINT_AUTO) {   // mpv 0.35 has no "auto": look at the first frame
@@ -183,9 +257,12 @@ int player_frame(void) {
   return 1;
 }
 
-SDL_Texture *player_texture(SDL_Rect *d) {
+SDL_Texture *player_texture(SDL_Rect *src, SDL_Rect *d) {
   if (!tex) return NULL;
-  double a = (double)tw / th;
+  *src = (SDL_Rect){ 0, 0, tw, th };
+  if (ASPECT_CROPS(settings.aspect) && crop_w == tw && crop_h == th)
+    *src = (SDL_Rect){ crop_on.l, crop_on.t, tw - crop_on.l - crop_on.r, th - crop_on.t - crop_on.b };
+  double a = (double)src->w / src->h;
   if (settings.aspect == ASPECT_4_3) a = 4.0 / 3;
   else if (settings.aspect == ASPECT_16_9) a = 16.0 / 9;
   int dw = W, dh = (int)(W / a + .5);
@@ -216,6 +293,15 @@ int player_buffering(void) {   // -1: playing normally; else how full the buffer
   mpv_get_property(mpv, "cache-buffering-state", MPV_FORMAT_INT64, &pct);
   return pct < 0 ? 0 : pct > 100 ? 100 : (int)pct;
 }
+double player_cache_end(void) {   // the film time the read-ahead reaches (it moves on while data arrives; -1 unknown)
+  double v = -1; if (active) mpv_get_property(mpv, "demuxer-cache-time", MPV_FORMAT_DOUBLE, &v); return v;
+}
+long player_net_speed(void) {   // bytes a second coming in from the network right now (mpv's cache-speed)
+  int64_t v = 0; if (active) mpv_get_property(mpv, "cache-speed", MPV_FORMAT_INT64, &v); return (long)v;
+}
+double player_cache_secs(void) {   // how much film is read ahead, in seconds (-1: unknown)
+  double v = -1; if (active) mpv_get_property(mpv, "demuxer-cache-duration", MPV_FORMAT_DOUBLE, &v); return v;
+}
 int player_paused(void) { int v = 0; mpv_get_property(mpv, "pause", MPV_FORMAT_FLAG, &v); return v; }
 void player_pause(int on) { int v = on; mpv_set_property_async(mpv, 0, "pause", MPV_FORMAT_FLAG, &v); }
 void player_seek(double rel) { char s[32]; snprintf(s, sizeof s, "%.1f", rel); cmd("seek", s, "relative"); }
@@ -226,14 +312,17 @@ void player_apply_settings(void) {
   if (!mpv) return;
   // One FFmpeg filter graph for the picture settings and the filter. All work on the YUV planes (cheap); the CRT
   // look is a softer, smaller picture here plus scanlines that Kino draws on top.
-  char g[256] = "";
+  char g[640] = "";
   size_t n = 0;
   #define ADD(...) n += snprintf(g + n, sizeof g - n, "%s", n ? "," : ""), n += snprintf(g + n, sizeof g - n, __VA_ARGS__)
   // First down to screen size: a 1080p picture has 2-3x the pixels the filters (and mpv after them) need.
   if ((settings.brightness || settings.contrast || settings.filter) && settings.filter != FILTER_CRT)
     ADD("scale=w='min(iw,1024)':h='min(ih,768)':force_original_aspect_ratio=decrease:flags=fast_bilinear");
-  if (settings.brightness || settings.contrast)
-    ADD("eq=brightness=%.2f:contrast=%.2f", settings.brightness / 100.0, 1 + settings.contrast / 50.0);
+  // Brightness as a curve on the light (limited range, 16-235) that keeps black black: dark scenes open up without
+  // the bars and the night going grey, as an added brightness made them. Contrast stays mpv's eq.
+  if (settings.contrast) ADD("eq=contrast=%.2f", 1 + settings.contrast / 50.0);
+  if (settings.brightness)
+    ADD("lutyuv=y='clip(16+219*pow(clip((val-16)/219,0,1),%.3f),16,235)'", 1 / pow(2, settings.brightness / 50.0));
   switch (settings.filter) {
     case FILTER_SHARPEN: ADD("unsharp=5:5:0.6"); break;
     case FILTER_WARM: ADD("lutyuv=u=val-7:v=val+9"); break;
@@ -242,7 +331,7 @@ void player_apply_settings(void) {
     case FILTER_CRT: ADD("scale=-2:'min(ih,288)':flags=bilinear,eq=saturation=1.25:contrast=1.08"); break;
   }
   #undef ADD
-  char vf[300] = "";
+  char vf[700] = "";
   if (n) snprintf(vf, sizeof vf, "lavfi=[%s]", g);
   mpv_set_property_string(mpv, "vf", vf);
   mpv_set_property_string(mpv, "deinterlace", settings.deint == DEINT_ON ? "yes" : "no");

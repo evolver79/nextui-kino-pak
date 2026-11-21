@@ -41,3 +41,4 @@ void jf_poster_url(const JfItem *it, int w, int h, char *out, size_t n);   // 2:
 void jf_image_url(const JfItem *it, int w, int h, char *out, size_t n);   // 16:9 picture for the detail card
 // Playback reports: what 0 = started, 1 = progress, 2 = stopped. Runs on its own thread, returns at once.
 void jf_report(int what, const char *item_id, double pos, int paused);
+void jf_report_now(int what, const char *item_id, double pos);   // waits for it (quitting): stopped, converter off

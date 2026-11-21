@@ -40,7 +40,8 @@ int store_resume(const char *path, double *pos, double *dur);       // RES_*
 void store_set_resume(const char *path, double pos, double dur);    // pos near the end marks it seen
 void store_save(void);
 
-enum { ASPECT_ORIGINAL, ASPECT_4_3, ASPECT_16_9, ASPECT_STRETCH, ASPECT_ZOOM, NASPECT };
+enum { ASPECT_ORIGINAL, ASPECT_4_3, ASPECT_16_9, ASPECT_STRETCH, ASPECT_ZOOM, ASPECT_NOBARS, NASPECT };   // saved by number: new ones last
+#define ASPECT_CROPS(a) ((a) == ASPECT_NOBARS || (a) == ASPECT_ZOOM)   // these cut the film's own black bars (player.c)
 enum { DEINT_AUTO, DEINT_ON, DEINT_OFF, NDEINT };
 enum { FILTER_NONE, FILTER_SHARPEN, FILTER_WARM, FILTER_COOL, FILTER_BW, FILTER_CRT, NFILTER };
 extern const char *FILTER_NAMES[NFILTER], *ASPECT_NAMES[NASPECT];
@@ -84,8 +85,11 @@ void player_close(void);                   // stops; the caller saves the positi
 int player_active(void);
 int player_handle(SDL_Event *e);           // mpv's events; 1 when the file ended, 2 when it broke off
 int player_buffering(void);                // -1 playing; 0-100 buffered before carrying on; 101 opening or seeking
+double player_cache_secs(void);
+long player_net_speed(void);               // bytes/s arriving (mpv's figure: it keeps its last value in an outage)
+double player_cache_end(void);             // the film time read ahead to; moving on = data arriving            // film read ahead, s (-1 unknown)
 int player_frame(void);                    // renders a new frame into the texture if there is one; 1 = new
-SDL_Texture *player_texture(SDL_Rect *dst);   // where it goes on screen with the current aspect setting
+SDL_Texture *player_texture(SDL_Rect *src, SDL_Rect *dst);   // the part to draw (black bars cut) and where, with the aspect
 double player_pos(void), player_duration(void);
 int player_paused(void);
 void player_pause(int on);

@@ -53,8 +53,11 @@ static int net_stalls, net_drops0, net_poor, net_was_buffering;
 #define LOST_TRIES 5
 static Uint32 net_t0;   // when this Jellyfin film was asked for; net: log lines count from it
 static const char *net_shots;   // KINO_SHOTS=<dir>: a screenshot at each warning (test/net.sh)
+static int net_test;            // KINO_PLAY set: test/net.sh is driving (the position goes in the log every 10 s)
 static volatile sig_atomic_t net_reset;   // SIGUSR1 (test/net.sh, next scenario): warn again as if a new film
 static void on_usr1(int sig) { (void)sig; net_reset = 1; }
+static volatile sig_atomic_t term_asked;   // SIGTERM (the system closing Kino): quit the normal way
+static void on_term(int sig) { (void)sig; term_asked = 1; }
 static void shot(const char *dir, const char *name);
 // "net: ..." lines in the log (Kino.txt) while a Jellyfin film plays: what the network did and what Kino said.
 static void net_log(const char *shot_name, const char *fmt, ...) {
@@ -848,9 +851,9 @@ static void draw_browse(void) {
 static void draw_video(void) {
   SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
   SDL_RenderClear(ren);
-  SDL_Rect d;
-  SDL_Texture *t = player_texture(&d);
-  if (t) SDL_RenderCopy(ren, t, NULL, &d);
+  SDL_Rect s, d;
+  SDL_Texture *t = player_texture(&s, &d);
+  if (t) SDL_RenderCopy(ren, t, &s, &d);
   if (t && settings.filter == FILTER_CRT) {   // scanlines every third row and a soft vignette, made once
     if (!crt_tex) {
       static Uint32 px[W * H];
@@ -1093,8 +1096,19 @@ static void change_option(int dir) {
   if (player_active()) player_apply_settings();
 }
 
+// Quitting while a Jellyfin film plays (MENU, or killed by the system): tell the server where it stopped and to stop
+// converting, before Kino is gone. Without it the server went on converting for nobody and the place was the last
+// progress report. Skipped without Wi-Fi (each request would wait 8 s for nothing).
+static void quit_jellyfin(void) {
+  if (!jf_playing) return;
+  if (wifi_state() != WIFI_OFF) jf_report_now(2, playing_jf.id, player_pos());
+  jf_playing = 0;
+  wifi_power_save(1);
+}
+
 static void on_button(int b) {
   if (b == BTN_MENU) {
+    quit_jellyfin();
     if (player_active()) { save_position(); player_close(); }
     running = 0; return;
   }
@@ -1271,7 +1285,7 @@ static void shots(const char *out) {
   set_cursor(2); wait_media(); shot(out, "browse-series");
   settings.ground = 1; shot(out, "browse-series-ground-centre"); settings.ground = 0;
   set_cursor(3); wait_media(); shot(out, "browse-new");
-  play(2, 0); pump(1500); overlay_until = 0; pump(400);
+  play(2, 0); pump(1500); overlay_until = 0; pump(4500);   // the crop holds for 4 s before it's taken
   shot(out, "playing-subtitles");   // playing, no controls: the .srt next to it (build/shots.sh) in Noto Sans
   player_pause(1); pump(400);
   shot(out, "playing");
@@ -1412,12 +1426,13 @@ int main(int argc, char **argv) {
     // KINO_PLAY=<Jellyfin item id>[@seconds]: straight into that film (test/net.sh); KINO_SHOTS=<dir> as above
     const char *ap = getenv("KINO_PLAY"); net_shots = getenv("KINO_SHOTS");
     if (ap && *ap && jf_logged_in()) {
-      signal(SIGUSR1, on_usr1);
+      signal(SIGUSR1, on_usr1); net_test = 1;
       JfItem it = { 0 }; snprintf(it.id, sizeof it.id, "%.*s", (int)strcspn(ap, "@"), ap);
       snprintf(it.name, sizeof it.name, "%s", it.id); snprintf(it.type, sizeof it.type, "Movie");
       if (strchr(ap, '@')) it.pos = atof(strchr(ap, '@') + 1);
       screen = SCR_BROWSE; play_jf(&it, 0);
     }
+    signal(SIGTERM, on_term);
     int held = -1; Uint32 repeat_at = 0;
     while (running) {
       SDL_Event e;
@@ -1446,23 +1461,32 @@ int main(int argc, char **argv) {
       if (screen == SCR_PLAY && SDL_GetTicks() - last_save > 30000) { save_position(); last_save = SDL_GetTicks(); }
       if (jf_playing && player_active() && SDL_GetTicks() - last_report > 10000) {
         jf_report(1, playing_jf.id, player_pos(), player_paused()); last_report = SDL_GetTicks();
-        if (net_shots) net_log(NULL, "at %.0f s%s", player_pos(), player_buffering() >= 0 ? ", waiting" : "");   // tests only
+        if (net_test) net_log(NULL, "at %.0f s%s, %.0f s ahead, %ld kB/s in", player_pos(), player_buffering() >= 0 ? ", waiting" : "",
+                              player_cache_secs(), player_net_speed() / 1000);   // tests only
       }
       if (job_th && SDL_AtomicGet(&job_done)) job_finished();
       if (retry_at && SDL_GetTicks() >= retry_at && !job_th && jf_playing) {   // ask the server again: a fresh URL
         retry_at = 0; playing_jf.pos = player_pos(); jf_play_from_start = 0; start_job(J_PLAY);
       }
+      if (term_asked) running = 0;
       if (net_reset) {
         net_reset = 0; net_stalls = net_poor = 0; net_drops0 = wifi_drops();
         net_log(NULL, "-- next test: warnings reset");
       }
       if (jf_playing && player_active()) net_watch();
-      // Stuck: waiting for the network for 40 s without getting anywhere (FFmpeg can go on reconnecting quietly, or the
-      // server sends nothing): count it as broken off, so the tries above ask the server again, and give up in the end.
-      static Uint32 stuck_since;
-      if (jf_playing && player_active() && !player_paused() && !retry_at && !job_th && player_buffering() >= 0) {
+      // Stuck: waiting with nothing arriving (FFmpeg can go on reconnecting quietly, or the server sends nothing): 40 s
+      // in the middle of a film, 75 s while it opens (the server starts a converter for a stream it converts, which
+      // took 36 s in tests). Then it counts as broken off: the tries above ask the server again, and give up in the end.
+      // Data coming in (the read-ahead reaching further: mpv's own speed figure keeps its last value through an outage)
+      // means it's slow, not stuck, and starts the count again.
+      static Uint32 stuck_since; static double cache_end;
+      int waiting = player_buffering();
+      double end = player_cache_end(), grew = end > cache_end + 0.5;
+      if (end >= 0) cache_end = end;
+      if (jf_playing && player_active() && !player_paused() && !retry_at && !job_th && waiting >= 0 && !grew) {
+        Uint32 limit = waiting == 101 ? 75000 : 40000;
         if (!stuck_since) stuck_since = SDL_GetTicks();
-        else if (SDL_GetTicks() - stuck_since > 40000) { stuck_since = 0; stream_lost("stuck waiting"); }
+        else if (SDL_GetTicks() - stuck_since > limit) { stuck_since = 0; stream_lost("stuck waiting"); }
       } else stuck_since = 0;
       if (lost_tries && !retry_at && player_active() && player_buffering() < 0 && player_pos() > playing_jf.pos + 10)
         { lost_tries = 0; net_log(NULL, "reconnected, playing for 10 s at %.0f s", player_pos()); }   // a later drop: five new tries
@@ -1475,6 +1499,8 @@ int main(int argc, char **argv) {
       SDL_RenderPresent(ren);
     }
   }
+  quit_jellyfin();   // killed (SIGTERM) or the window closed while a Jellyfin film played
+  if (player_active()) { save_position(); player_close(); }
   leds_restore();
   store_save();
   media_stop();

@@ -280,6 +280,12 @@ static const char *DEVICE_PROFILE =
 
 int jf_playback(const JfItem *it, char *out, size_t n, int max_bps) {
   char path[300], *body = malloc(strlen(DEVICE_PROFILE) + 300);
+  // A converter still running for the last stream (a reconnect asks for a fresh one while the old is open): stop it
+  // first, or the server runs two and the new one takes far longer to start
+  if (play_session[0] && !strcmp(play_method, "Transcode")) {
+    snprintf(path, sizeof path, "/Videos/ActiveEncodings?DeviceId=%s&PlaySessionId=%s", device_id, play_session);
+    char *b = http("DELETE", path, NULL, NULL); free(b);
+  }
   snprintf(path, sizeof path, "/Items/%s/PlaybackInfo?UserId=%s", it->id, user_id);
   sprintf(body, "{\"DeviceProfile\":%s,\"MaxStreamingBitrate\":%d,\"EnableDirectPlay\":true,"
           "\"EnableDirectStream\":true,\"EnableTranscoding\":true,\"AllowVideoStreamCopy\":true,"
@@ -349,11 +355,23 @@ static int report_thread(void *u) {
   free(b);
   if (r->what == 2 && r->session[0]) {   // stop the server's transcoder for this session too
     char p[300]; snprintf(p, sizeof p, "/Videos/ActiveEncodings?DeviceId=%s&PlaySessionId=%s", device_id, r->session);
-    AVDictionary *o = NULL; (void)o;
-    b = http("DELETE", p, NULL, NULL); free(b);
+    int e = 0;
+    b = http("DELETE", p, NULL, &e); free(b);
+    fprintf(stderr, "jf: stopped %.8s…, converter off: %s (%d)\n", r->session, e >= 0 ? "ok" : "refused", e);
   }
   free(r);
   return 0;
+}
+
+// The same, done before returning: quitting Kino, where a report on its own thread would die with the program
+void jf_report_now(int what, const char *item_id, double pos) {
+  if (!jf_logged_in() || what < 0 || what > 2) return;
+  Report *r = calloc(1, sizeof *r);
+  r->what = what; r->pos = pos;
+  snprintf(r->id, sizeof r->id, "%s", item_id);
+  snprintf(r->session, sizeof r->session, "%s", play_session);
+  snprintf(r->method, sizeof r->method, "%s", play_method);
+  report_thread(r);   // frees r
 }
 
 void jf_report(int what, const char *item_id, double pos, int paused) {

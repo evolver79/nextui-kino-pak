@@ -14,7 +14,11 @@ ln -s ../../../../../test/hevc-720p.mkv "$O/videos/Films/Glacier Walk.mkv"
 ln -s ../../../../../test/h264-1080p.mp4 "$O/videos/Films/Night Ferry.mp4"
 # A picture next to a film is its cover (here a frame saved as a jpg, to test the lookup).
 ffmpeg -v error -ss 3 -i test/h264-480p.mp4 -frames:v 1 -vf scale=400:600 "$O/videos/Films/Rally Highlights.jpg"
-i=1; for f in h264-480p.mp4 h264-720p.mp4 hevc-720p.mkv h264-1080p.mp4 hevc-1080p.mkv; do
+# A wide film with its own dark grey bars (2.39:1 in a 16:9 file), for episode 3 below: the playing shots show the
+# bars cut away (autocrop) and the subtitles moved up out of the bottom bar
+[ -f build/out/letterbox.mkv ] || ffmpeg -v error -f lavfi -i testsrc2=s=1280x536:r=24:d=30 \
+  -vf "pad=1280:720:0:92:color=0x101010" -c:v libx264 -pix_fmt yuv420p build/out/letterbox.mkv
+i=1; for f in h264-480p.mp4 h264-720p.mp4 ../build/out/letterbox.mkv h264-1080p.mp4 hevc-1080p.mkv; do
   n=$(echo "Dark Snow Ice Thaw Light" | cut -d' ' -f$i)
   ln -s ../../../../../../test/$f "$O/videos/Series/Northern/Episode $i · $n.${f##*.}"; i=$((i+1))
 done

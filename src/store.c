@@ -10,7 +10,7 @@ static Res *res;
 static int nres, capres, dirty;
 static char user[1024];
 
-Settings settings = { ASPECT_ORIGINAL, 0, 0, DEINT_AUTO, 1, 0, 0, 0, 1, FILTER_NONE, SORT_NAME, 0, QUALITY_4, SUBSIZE_M };
+Settings settings = { ASPECT_NOBARS, 0, 0, DEINT_AUTO, 1, 0, 0, 0, 1, FILTER_NONE, SORT_NAME, 0, QUALITY_4, SUBSIZE_M };
 // Subtitle size: mpv's sub-scale on Kino's 54 (it scales styled ASS subtitles too, which a font size alone wouldn't)
 const char *SUBSIZE_NAMES[NSUBSIZE] = { "S", "M", "L", "XL" };
 const double SUBSIZE_SCALE[NSUBSIZE] = { 0.8, 1.0, 1.25, 1.55 };
@@ -19,7 +19,7 @@ const char *QUALITY_NAMES[NQUALITY] = { "2 MBIT/S", "4 MBIT/S", "8 MBIT/S", "MAX
 const int QUALITY_BPS[NQUALITY] = { 2000000, 4000000, 8000000, 12000000 };
 const char *SORT_NAMES[NSORT] = { "Name", "Recently added", "Unwatched" };
 const char *FILTER_NAMES[NFILTER] = { "None", "Sharpen", "Warm", "Cool", "Black & white", "Retro CRT" };
-const char *ASPECT_NAMES[NASPECT] = { "Original", "4:3", "16:9", "Stretch", "Zoom" };
+const char *ASPECT_NAMES[NASPECT] = { "Original", "4:3", "16:9", "Stretch", "Zoom", "No bars" };
 const char *PREFER_LANGS[NPREFER] = { "eng,en", "nor,nob,no,nb,en,eng", "nor,nob,no,nb", "", "eng,en,nor,nob,no,nb" };
 const char *PREFER_LABELS[NPREFER] = { "ENG", "NOR, ENG", "NOR", "FILE", "ENG, NOR" };
 
