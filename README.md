@@ -58,7 +58,7 @@ In Options, X shows the buttons screen (it also opens on the first start).
 
 Copy `Kino.pak` into `Tools/tg5040/` on the SD card and put videos in `Videos/`. Settings, resume positions and the
 picture cache are kept in NextUI's user data folder (`.userdata/tg5040/Kino`). Kino starts in `Videos`; B there goes
-up to the SD card, where only folders with videos in them show.
+up to the SD card, where every folder shows (B at the SD card quits).
 
 ## Problems?
 

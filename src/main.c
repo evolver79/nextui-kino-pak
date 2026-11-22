@@ -295,34 +295,10 @@ static void set_cursor(int c) {
   want_media();
 }
 
-// A folder outside Videos is listed only if a film is somewhere in it (a few levels down), so the card's root shows
-// Videos and film folders, not Roms, Bios, Saves and the like.
-static int has_video(const char *dir, int levels, int *budget) {
-  DIR *d = opendir(dir);
-  if (!d) return 0;
-  int found = 0;
-  struct dirent *e;
-  while (!found && (e = readdir(d)) && --*budget > 0) {
-    if (e->d_name[0] == '.') continue;
-    int isdir = e->d_type == DT_DIR;
-    char p[1400]; snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
-    if (e->d_type == DT_UNKNOWN) { struct stat st; if (stat(p, &st) != 0) continue; isdir = S_ISDIR(st.st_mode); }
-    if (!isdir) found = is_video(e->d_name);
-    else if (levels > 0) found = has_video(p, levels - 1, budget);
-  }
-  closedir(d);
-  return found;
-}
-
-static int in_home(void) {   // cwd is Videos or a folder in it
-  size_t l = strlen(home);
-  return !strncmp(cwd, home, l) && (!cwd[l] || cwd[l] == '/');
-}
-
 static void list_dir(void) {
   free(items); items = NULL; nitems = 0;
   DIR *d = opendir(cwd);
-  int cap = 0, outside = !in_home();
+  int cap = 0;
   struct dirent *e;
   while (d && (e = readdir(d))) {
     if (e->d_name[0] == '.') continue;
@@ -330,7 +306,6 @@ static void list_dir(void) {
     if (stat(p, &st) != 0) continue;
     int dir = S_ISDIR(st.st_mode);
     if (!dir && !is_video(e->d_name)) continue;
-    if (dir && outside && strcmp(p, home)) { int budget = 4000; if (!has_video(p, 3, &budget)) continue; }
     if (nitems == cap) { cap = cap ? cap * 2 : 64; items = realloc(items, cap * sizeof *items); }
     snprintf(items[nitems].name, sizeof items[nitems].name, "%s", e->d_name);
     items[nitems].mtime = st.st_mtime; items[nitems].cover_set = 0; items[nitems].virt = 0;
