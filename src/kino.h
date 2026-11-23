@@ -3,7 +3,7 @@
 #include <SDL2/SDL.h>
 #include <stdint.h>
 
-#define KINO_VERSION "0.10.0"
+#define KINO_VERSION "0.10.1"
 #define W 1024
 #define H 768
 #define THUMB_W 428
