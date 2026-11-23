@@ -1,12 +1,13 @@
 {
   "name": "Kino",
-  "version": "v0.10.1",
+  "version": "v1.0.0",
   "type": "TOOL",
   "description": "Video player for the Brick: films and series from the SD card (it starts in Videos) or a Jellyfin server at home, with hardware decoding for H.264 and HEVC, resume, subtitles, picture filters and a cover grid. Drawn in Dot, the shared look of Kino, Musicdisk and Tuner.",
   "author": "evolver79",
   "repo_url": "https://github.com/evolver79/nextui-kino-pak",
   "release_filename": "Kino.pak.zip",
   "changelog": {
+    "v1.0.0": "Kino 1.0: Up next plays the next episode after a short countdown, from the SD card or Jellyfin (A now, B not now; off in Options). Skip intro, recap and credits on Jellyfin episodes with X, where the server has marked them. A new Audio tab picks the sound track, and Prefer and Then choose the sound language the same way as subtitles, also when Jellyfin converts the film.",
     "v0.10.1": "Subtitles in your language: Prefer and Then choose from about 45 languages, and Kino picks the matching track itself, also from Jellyfin, where a track named \"English\" didn't count as English. Changing them while a film plays switches straight away, and a track you choose yourself is kept. Subtitles keep their shape with 4:3, 16:9 and Stretch, and stay sharp on videos smaller than the screen.",
     "v0.10.0": "New look, sized for the Brick's small screen: bigger text, dark glass cards on a midnight-blue ground, and the buttons in a bar along the bottom. In Jellyfin, the cover you're on fills the background, blurred. Options and the buttons help are in tabs (L1/R1). Long lists show where you are (1–5 of 9) with a scroll track, and the film icon is gone from lists of films so titles fit. Subtitles move above the controls while they're showing.",
     "v0.9.1": "Jellyfin with no Wi-Fi: the Jellyfin row is greyed out and says NO WI-FI, with how to turn it on, instead of opening and failing. It comes back on by itself the moment the Wi-Fi is back and has an address.",
