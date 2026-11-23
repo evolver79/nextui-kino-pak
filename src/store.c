@@ -10,7 +10,7 @@ static Res *res;
 static int nres, capres, dirty;
 static char user[1024];
 
-Settings settings = { ASPECT_NOBARS, 0, 0, DEINT_AUTO, 1, 0, 0, 0, 1, FILTER_NONE, SORT_NAME, 0, QUALITY_4, SUBSIZE_M };
+Settings settings = { ASPECT_NOBARS, 0, 0, DEINT_AUTO, 1, 0, 0, 1, FILTER_NONE, SORT_NAME, 0, QUALITY_4, SUBSIZE_M, "eng", "" };
 // Subtitle size: mpv's sub-scale on Kino's 54 (it scales styled ASS subtitles too, which a font size alone wouldn't)
 const char *SUBSIZE_NAMES[NSUBSIZE] = { "S", "M", "L", "XL" };
 const double SUBSIZE_SCALE[NSUBSIZE] = { 0.8, 1.0, 1.25, 1.55 };
@@ -20,8 +20,6 @@ const int QUALITY_BPS[NQUALITY] = { 2000000, 4000000, 8000000, 12000000 };
 const char *SORT_NAMES[NSORT] = { "Name", "Recently added", "Unwatched" };
 const char *FILTER_NAMES[NFILTER] = { "None", "Sharpen", "Warm", "Cool", "Black & white", "Retro CRT" };
 const char *ASPECT_NAMES[NASPECT] = { "Original", "4:3", "16:9", "Stretch", "Zoom", "No bars" };
-const char *PREFER_LANGS[NPREFER] = { "eng,en", "nor,nob,no,nb,en,eng", "nor,nob,no,nb", "", "eng,en,nor,nob,no,nb" };
-const char *PREFER_LABELS[NPREFER] = { "ENG", "NOR, ENG", "NOR", "FILE", "ENG, NOR" };
 
 static Res *find(const char *path) {
   for (int i = 0; i < nres; i++) if (!strcmp(res[i].path, path)) return &res[i];
@@ -31,14 +29,24 @@ static Res *find(const char *path) {
 static void settings_load(void) {
   char p[1100]; snprintf(p, sizeof p, "%s/settings.txt", user);
   FILE *f = fopen(p, "r"); if (!f) return;
-  char k[64]; int v;
-  while (fscanf(f, " %63[^=]=%d", k, &v) == 2) {
+  char line[128];
+  while (fgets(line, sizeof line, f)) {
+    char k[64], sv[64]; if (sscanf(line, " %63[^=]=%63s", k, sv) != 2) continue;
+    int v = atoi(sv);
+    if (!strcmp(k, "prefer1") || !strcmp(k, "prefer2")) {   // a language code, or "-" for the film's own / none
+      char *dst = k[6] == '1' ? settings.prefer1 : settings.prefer2;
+      if (!strcmp(sv, "-") || lang_index(sv) >= 0) snprintf(dst, 4, "%.3s", strcmp(sv, "-") ? sv : "");
+      continue;
+    }
     if (!strcmp(k, "aspect") && v >= 0 && v < NASPECT) settings.aspect = v;
     else if (!strcmp(k, "brightness")) settings.brightness = v < -50 ? -50 : v > 50 ? 50 : v;
     else if (!strcmp(k, "contrast")) settings.contrast = v < -50 ? -50 : v > 50 ? 50 : v;
     else if (!strcmp(k, "deinterlace") && v >= 0 && v < NDEINT) settings.deint = v;
     else if (!strcmp(k, "subtitles")) settings.subs = !!v;
-    else if (!strcmp(k, "prefer") && v >= 0 && v < NPREFER) settings.prefer = v;
+    else if (!strcmp(k, "prefer") && v >= 0 && v <= 4) {   // before 0.10.1: one of five fixed choices
+      static const char *was[5][2] = { { "eng", "" }, { "nor", "eng" }, { "nor", "" }, { "", "" }, { "eng", "nor" } };
+      snprintf(settings.prefer1, 4, "%s", was[v][0]); snprintf(settings.prefer2, 4, "%s", was[v][1]);
+    }
     else if (!strcmp(k, "leds")) settings.leds = !!v;
     else if (!strcmp(k, "ground")) settings.ground = !!v;
     else if (!strcmp(k, "hwdec")) settings.hwdec = !!v;
@@ -54,8 +62,9 @@ static void settings_load(void) {
 void settings_save(void) {
   char p[1100]; snprintf(p, sizeof p, "%s/settings.txt", user);
   FILE *f = fopen(p, "w"); if (!f) return;
-  fprintf(f, "aspect=%d\nbrightness=%d\ncontrast=%d\ndeinterlace=%d\nsubtitles=%d\nprefer=%d\nleds=%d\nground=%d\nhwdec=%d\nfilter=%d\nsort=%d\nintro=%d\nquality=%d\nsubsize=%d\n",
-          settings.aspect, settings.brightness, settings.contrast, settings.deint, settings.subs, settings.prefer,
+  fprintf(f, "aspect=%d\nbrightness=%d\ncontrast=%d\ndeinterlace=%d\nsubtitles=%d\nprefer1=%s\nprefer2=%s\nleds=%d\nground=%d\nhwdec=%d\nfilter=%d\nsort=%d\nintro=%d\nquality=%d\nsubsize=%d\n",
+          settings.aspect, settings.brightness, settings.contrast, settings.deint, settings.subs,
+          *settings.prefer1 ? settings.prefer1 : "-", *settings.prefer2 ? settings.prefer2 : "-",
           settings.leds, settings.ground, settings.hwdec, settings.filter, settings.sort, settings.intro, settings.quality, settings.subsize);
   fclose(f);
 }

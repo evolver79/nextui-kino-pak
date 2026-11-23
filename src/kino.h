@@ -48,13 +48,14 @@ enum { FILTER_NONE, FILTER_SHARPEN, FILTER_WARM, FILTER_COOL, FILTER_BW, FILTER_
 extern const char *FILTER_NAMES[NFILTER], *ASPECT_NAMES[NASPECT];
 typedef struct {
   int aspect, brightness, contrast, deint;   // brightness/contrast -50..50 (mpv's -100..100 is too much)
-  int subs, prefer, leds, ground;            // prefer = index into PREFER_LANGS; ground = Dot light point (test)
+  int subs, leds, ground;                    // ground = Dot light point (test)
   int hwdec;                                 // the video engine for H.264/HEVC (src/cedar)
   int filter;                                // FILTER_*: L1/R1 while playing
   int sort;                                  // SORT_*: the Jellyfin cover grid (SELECT)
   int intro;                                 // 1 once the button screen has been shown on the first start
   int quality;                               // QUALITY_*: the most Jellyfin may send; above it, it converts
   int subsize;                               // SUBSIZE_*: subtitle size (Options > Subtitles > Size)
+  char prefer1[4], prefer2[4];               // subtitle languages, first and then (lang.c codes); "": the film's own / none
 } Settings;
 enum { SUBSIZE_S, SUBSIZE_M, SUBSIZE_L, SUBSIZE_XL, NSUBSIZE };
 extern const char *SUBSIZE_NAMES[NSUBSIZE];
@@ -65,8 +66,6 @@ extern const int QUALITY_BPS[NQUALITY];
 enum { SORT_NAME, SORT_ADDED, SORT_UNWATCHED, NSORT };
 extern const char *SORT_NAMES[NSORT];
 extern Settings settings;
-extern const char *PREFER_LANGS[], *PREFER_LABELS[];
-#define NPREFER 5
 void settings_save(void);
 
 // --- wifi.c: the Wi-Fi signal, read in the background --------------------------------------------------------------
@@ -99,7 +98,13 @@ void player_seek_to(double pos);
 void player_apply_settings(void);
 int player_sub_tracks(void);               // number of subtitle tracks
 const char *player_sub_label(void);        // current track: "ENGLISH", "OFF", ...
-void player_cycle_sub(int dir);
+void player_cycle_sub(int dir);            // by hand: Kino stops choosing the subtitle for this film
+// --- lang.c: language labels ("English", "en-US", "ger", "Norsk") to one code ("eng", "deu", "nor") -----------------
+const char *lang_code(const char *s);      // NULL when not a language it knows
+const char *lang_label(const char *s);     // the language's own name for Options ("NORSK"), or NULL
+int lang_count(void);                      // the languages Kino knows, in the order Options offers them
+const char *lang_code_at(int i);
+int lang_index(const char *code);          // -1 when not one of them
 void player_sub_above(int pct);            // subtitles no lower than pct of the picture's height (100: mpv's own)
 Uint32 player_accent(void);                // dominant colour of recent frames
 void player_report(const char *file, double secs, long frames, double cpu);   // --bench line

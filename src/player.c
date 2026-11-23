@@ -32,6 +32,30 @@ enum { O_POS = 1, O_DUR, O_WAIT, O_IDLE, O_PAUSE, O_BUFPCT, O_CEND, O_SPEED, O_C
        O_TRACKS, R_DEC = 100, R_CODEC };
 static struct { double pos, dur, cend, cdur; int wait, idle, pause, il; int64_t bufpct, speed, dw, dh; int subs;
                 char sid[16], slang[16], snum[16]; } o;
+// Subtitle tracks as Kino sees them, and Kino choosing one by the Prefer languages (mpv's own slang only picks among
+// tracks there at load and compares the tags as they are, so "English" from Jellyfin never matched "eng").
+static struct { int id, forced; char code[4]; } st[32];
+static int nst, sub_by_hand;
+static char last_prefer[16] = "?";
+static void setp(const char *name, const char *v);
+static void pick_sub(void) {
+  if (sub_by_hand || !nst) return;
+  if (!*settings.prefer1) return;   // the film's own choice
+  const char *wants[2] = { settings.prefer1, settings.prefer2 };
+  for (int w = 0; w < 2; w++) {
+    const char *code = wants[w];
+    if (!*code) continue;
+    int best = -1;
+    for (int i = 0; i < nst; i++)   // full subtitles before forced ones (those only translate signs)
+      if (!strcmp(st[i].code, code) && (best < 0 || (st[best].forced && !st[i].forced))) best = i;
+    if (best >= 0) {
+      char id[16]; snprintf(id, sizeof id, "%d", st[best].id);
+      if (strcmp(o.sid, id)) { setp("sid", id); fprintf(stderr, "subtitles: track %s (%s%s) by Prefer\n", id, code, st[best].forced ? ", forced" : ""); }
+      return;
+    }
+  }
+}
+
 static void o_reset(void) {   // a file opening: nothing known yet, "opening" (core idle, not paused)
   int pause = o.pause, subs = o.subs;
   memset(&o, 0, sizeof o); o.pos = o.dur = o.cend = o.cdur = -1; o.idle = 1; o.pause = pause; o.subs = subs;
@@ -62,15 +86,40 @@ static void on_property(mpv_event_property *p) {
   else if (!strcmp(p->name, "current-tracks/sub/id")) snprintf(o.snum, sizeof o.snum, "%s", str);
   else if (!strcmp(p->name, "track-list") && have && p->format == MPV_FORMAT_NODE) {
     mpv_node *n = p->data; int subs = 0;
+    nst = 0;
     if (n->format == MPV_FORMAT_NODE_ARRAY)
       for (int k = 0; k < n->u.list->num; k++) {
         mpv_node *t = &n->u.list->values[k];
         if (t->format != MPV_FORMAT_NODE_MAP) continue;
-        for (int j = 0; j < t->u.list->num; j++)
-          if (!strcmp(t->u.list->keys[j], "type") && t->u.list->values[j].format == MPV_FORMAT_STRING &&
-              !strcmp(t->u.list->values[j].u.string, "sub")) subs++;
+        const char *type = "", *lang = "", *title = "", *file = ""; int64_t id = 0; int forced = 0;
+        for (int j = 0; j < t->u.list->num; j++) {
+          const char *key = t->u.list->keys[j]; mpv_node *v = &t->u.list->values[j];
+          if (v->format == MPV_FORMAT_STRING) {
+            if (!strcmp(key, "type")) type = v->u.string;
+            else if (!strcmp(key, "lang")) lang = v->u.string;
+            else if (!strcmp(key, "title")) title = v->u.string;
+            else if (!strcmp(key, "external-filename")) file = v->u.string;
+          } else if (v->format == MPV_FORMAT_INT64 && !strcmp(key, "id")) id = v->u.int64;
+          else if (v->format == MPV_FORMAT_FLAG && !strcmp(key, "forced")) forced = v->u.flag;
+        }
+        if (strcmp(type, "sub")) continue;
+        subs++;
+        if (nst < 32) {   // its language: the tag, else the title, else the file name's language suffix (Film.en.srt)
+          const char *code = lang_code(lang);
+          if (!code) code = lang_code(title);
+          if (!code && *file) {
+            const char *b = strrchr(file, '/'); b = b ? b + 1 : file;
+            char tmp[256]; snprintf(tmp, sizeof tmp, "%s", b);
+            char *dot = strrchr(tmp, '.'); if (dot) *dot = 0;   // drop .srt
+            char *lang_dot = strrchr(tmp, '.'); if (lang_dot) code = lang_code(lang_dot + 1);
+          }
+          st[nst].id = (int)id; st[nst].forced = forced || strstr(title, "orced") != NULL;
+          snprintf(st[nst].code, sizeof st[nst].code, "%s", code ? code : "");
+          nst++;
+        }
       }
     o.subs = subs;
+    pick_sub();
   } else if (!strcmp(p->name, "video-frame-info/interlaced")) {
     o.il = f;   // mpv 0.35 has no deinterlace "auto": on when the picture says it's interlaced
     if (f && active && settings.deint == DEINT_AUTO && !deint_checked) { deint_checked = 1; setp("deinterlace", "yes"); }
@@ -227,6 +276,7 @@ int player_init(SDL_Renderer *r, int audio, const char *mpv_dir) {
   mpv_set_option_string(mpv, "config", "yes");
   mpv_set_option_string(mpv, "config-dir", mpv_dir);
   mpv_set_option_string(mpv, "sub-font-provider", "none");
+  mpv_set_option_string(mpv, "sub-ass-vsfilter-aspect-compat", "no");   // ASS subtitles (MKV, Jellyfin) keep their shape when 4:3/16:9/Stretch reshape the picture
   mpv_set_option_string(mpv, "sub-font", "Noto Sans");
   // A black box behind the text (75 %: a little of the picture shows through), easier to read than an outline alone
   // over a busy picture; the border size is the box's padding
@@ -303,6 +353,7 @@ void player_open(const char *path, double start) {
   mpv_command_async(mpv, 0, v);
   o_reset();
   active = 1; stopping = 0; frames = 0; deint_checked = 0; crop_reset();
+  nst = 0; sub_by_hand = 0;   // a new film: Kino chooses its subtitle again
   last_pos = start > 0 ? start : 0; last_dur = 0;
   accent = 0xff6a2b;
 }
@@ -355,15 +406,22 @@ int player_handle(SDL_Event *e) {
   return ended;
 }
 
+static double aspect_target(double fa);
+
 int player_frame(void) {
   if (!pending) return 0;
   pending = 0;
   if (!(mpv_render_context_update(rctx) & MPV_RENDER_UPDATE_FRAME)) return 0;
   int64_t vw = o.dw, vh = o.dh;
   if (vw <= 0 || vh <= 0) return 0;
-  int fw = W, fh = (int)(W * vh / vw);
-  if (fh > H) { fh = H; fw = (int)(H * vw / vh); }
-  if (fw > vw) { fw = (int)vw; fh = (int)vh; }   // never bigger than the video; SDL scales up
+  // The frame is drawn in the shape it is shown in. 4:3, 16:9 and Stretch change the film's shape: mpv stretches the
+  // picture inside (keepaspect off) but draws the subtitles in true proportions, so they never get squeezed. Before,
+  // the frame was drawn in the film's shape and stretched afterwards, subtitles and all.
+  double fa = (double)vw / vh, ta = aspect_target(fa);
+  int fw = W, fh = (int)(W / ta + .5);
+  if (fh > H) { fh = H; fw = (int)(H * ta + .5); }
+  // Drawn at the size it is shown, also for videos smaller than the screen (mpv scales them up): subtitles are then
+  // drawn pixel for pixel, sharp. Letting SDL scale a smaller frame up made them soft.
   fw &= ~1; fh &= ~1;
   if (!tex || fw != tw || fh != th) {
     if (tex) SDL_DestroyTexture(tex);
@@ -382,6 +440,15 @@ int player_frame(void) {
   mpv_render_context_report_swap(rctx);
   return 1;
 }
+
+// The shape the frame is shown in: the film's own (fa), or the one 4:3, 16:9 or Stretch asks for.
+static double aspect_target(double fa) {
+  if (settings.aspect == ASPECT_4_3) return 4.0 / 3;
+  if (settings.aspect == ASPECT_16_9) return 16.0 / 9;
+  if (settings.aspect == ASPECT_STRETCH) return (double)W / H;
+  return fa;
+}
+static int aspect_reshapes(void) { return settings.aspect == ASPECT_4_3 || settings.aspect == ASPECT_16_9 || settings.aspect == ASPECT_STRETCH; }
 
 SDL_Texture *player_texture(SDL_Rect *src, SDL_Rect *d) {
   if (!tex) return NULL;
@@ -450,34 +517,34 @@ void player_apply_settings(void) {
   setp("deinterlace", settings.deint == DEINT_ON ? "yes" : "no");
   if (settings.deint == DEINT_AUTO) deint_checked = 0;
   setp("sub-visibility", settings.subs ? "yes" : "no");
+  setp("keepaspect", aspect_reshapes() ? "no" : "yes");   // 4:3, 16:9, Stretch: the picture fills the frame (player_frame)
   char sc[16]; snprintf(sc, sizeof sc, "%.2f", SUBSIZE_SCALE[settings.subsize]);
   setp("sub-scale", sc);
-  setp("slang", PREFER_LANGS[settings.prefer]);
+  char slang[16]; snprintf(slang, sizeof slang, "%s%s%s", settings.prefer1, *settings.prefer2 ? "," : "", settings.prefer2);
+  setp("slang", slang);   // mpv's own first pick at load; Kino then chooses (pick_sub) by the codes
+  if (strcmp(slang, last_prefer)) { snprintf(last_prefer, sizeof last_prefer, "%s", slang); sub_by_hand = 0; pick_sub(); }   // changed: choose again
   setp("vd", settings.hwdec ? "h264_cedar,hevc_cedar" : "");   // next file
 }
 
 int player_sub_tracks(void) { return o.subs; }
 
-const char *player_sub_label(void) {
-  static const char *names[][2] = { { "eng", "ENGLISH" }, { "en", "ENGLISH" }, { "nor", "NORSK" }, { "nob", "NORSK" },
-    { "no", "NORSK" }, { "nb", "NORSK" }, { "swe", "SVENSKA" }, { "sv", "SVENSKA" }, { "dan", "DANSK" }, { "da", "DANSK" },
-    { "ger", "DEUTSCH" }, { "deu", "DEUTSCH" }, { "de", "DEUTSCH" }, { "fre", "FRANÇAIS" }, { "fra", "FRANÇAIS" },
-    { "fr", "FRANÇAIS" }, { "spa", "ESPAÑOL" }, { "es", "ESPAÑOL" } };
+const char *player_sub_label(void) {   // the track's language in its own name ("NORSK"), else its tag, else its number
   if (!active) return "AUTO";
   int off = !o.sid[0] || !strcmp(o.sid, "no") || !strcmp(o.sid, "auto");
   if (off) return player_sub_tracks() ? "OFF" : "NONE";
   const char *lang = o.slang[0] ? o.slang : NULL, *id = o.snum[0] ? o.snum : NULL;
-  snprintf(sub_label, sizeof sub_label, "TRACK %s", id ? id : "?");
-  for (unsigned i = 0; lang && i < sizeof names / sizeof *names; i++)
-    if (!strcmp(lang, names[i][0])) { snprintf(sub_label, sizeof sub_label, "%s", names[i][1]); break; }
-  if (lang && !strncmp(sub_label, "TRACK", 5)) {
+  if (!lang) for (int i = 0; i < nst; i++) if (id && st[i].id == atoi(id) && st[i].code[0]) lang = st[i].code;   // a file's suffix
+  const char *name = lang_label(lang);
+  if (name) snprintf(sub_label, sizeof sub_label, "%s", name);
+  else if (lang) {
     snprintf(sub_label, sizeof sub_label, "%s", lang);
     for (char *p = sub_label; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
-  }
+  } else snprintf(sub_label, sizeof sub_label, "TRACK %s", id ? id : "?");
   return sub_label;
 }
 
 void player_cycle_sub(int dir) {
+  sub_by_hand = 1;
   cmd("cycle", "sub", dir < 0 ? "down" : "up");
 }
 

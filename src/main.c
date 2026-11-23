@@ -27,7 +27,7 @@ enum { BTN_A = SDL_CONTROLLER_BUTTON_B, BTN_B = SDL_CONTROLLER_BUTTON_A, BTN_X =
        BTN_LEFT = SDL_CONTROLLER_BUTTON_DPAD_LEFT, BTN_RIGHT = SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
        BTN_L2 = SDL_CONTROLLER_BUTTON_MAX + 1, BTN_R2 = SDL_CONTROLLER_BUTTON_MAX + 2 };   // triggers are axes in SDL
 enum { SCR_BROWSE, SCR_PLAY, SCR_OPTIONS, SCR_CONNECT, SCR_HELP };
-enum { O_ASPECT, O_BRIGHT, O_CONTRAST, O_DEINT, O_FILTER, O_SUBS, O_TRACK, O_PREFER, O_LEDS, O_HWDEC, O_QUALITY, NOPT };   // Ground light: settings.txt only
+enum { O_ASPECT, O_BRIGHT, O_CONTRAST, O_DEINT, O_FILTER, O_SUBS, O_TRACK, O_PREFER, O_PREFER2, O_LEDS, O_HWDEC, O_QUALITY, NOPT };   // Ground light: settings.txt only
 // Options in tabs (L1/R1): each tab's options in order, the first one where a tab opens.
 #define NTABS 3
 static const char *TAB_NAMES[NTABS] = { "Picture", "Subtitles", "Brick" };
@@ -947,7 +947,7 @@ static void draw_browse(void) {
     dot_ground(dot);
   }
   // Crumb: "SD card / Videos / ...", only the last two folders when it's deeper than that.
-  char crumb[700], count[32], rel[1100];
+  char crumb[700], count[48], rel[1100];
   snprintf(crumb, sizeof crumb, strcmp(root, home) ? "SD card" : "SD card / Videos");
   if (jf_mode) {   // "Jellyfin / Shows / Northern"
     snprintf(crumb, sizeof crumb, jf_depth > 2 ? "…" : "Jellyfin");
@@ -1163,12 +1163,15 @@ static void draw_options(void) {
     for (char *q = fname; *q; q++) if (*q >= 'a' && *q <= 'z') *q -= 32;
     dot_opt(dot, x, y + 3 * P, cw, "Filter", fname, f[O_FILTER]);
   } else if (tab == 1) {
-    y = dot_panel(dot, 40, 108, 944, dot_panel_h(3 * P - 8) - 46, NULL);
+    y = dot_panel(dot, 40, 108, 944, dot_panel_h(4 * P - 8) - 46, NULL);
     // Show and size in one row: OFF, S, M, L, XL (A: on/off, keeping the size; SELECT while playing does the same)
     char show[24]; snprintf(show, sizeof show, "%s", settings.subs ? SUBSIZE_NAMES[settings.subsize] : "OFF");
     dot_opt(dot, x, y, cw, "Show · size", show, f[O_SUBS]);
     dot_opt(dot, x, y + P, cw, "Track", player_sub_label(), f[O_TRACK] | (player_active() ? 0 : DOT_OFF));
-    dot_opt(dot, x, y + 2 * P, cw, "Prefer", PREFER_LABELS[settings.prefer], f[O_PREFER]);
+    // Languages: the first the film has wins; Prefer "Film's own" leaves it to the film (Then is unused then)
+    const char *l1 = lang_label(settings.prefer1), *l2 = lang_label(settings.prefer2);
+    dot_opt(dot, x, y + 2 * P, cw, "Prefer", l1 ? l1 : "FILM'S OWN", f[O_PREFER]);
+    dot_opt(dot, x, y + 3 * P, cw, "Then", l2 ? l2 : "NONE", f[O_PREFER2] | (*settings.prefer1 ? 0 : DOT_OFF));
   } else {
     y = dot_panel(dot, 40, 108, 944, dot_panel_h(3 * P - 8) - 46, NULL);
     dot_opt_toggle(dot, x, y, cw, "Lights follow video", settings.leds, f[O_LEDS]);
@@ -1286,7 +1289,14 @@ static void change_option(int dir) {
       else settings.subsize = clampi(settings.subsize + dir, 0, NSUBSIZE - 1);
       break;
     case O_TRACK: if (player_active()) player_cycle_sub(dir); return;
-    case O_PREFER: settings.prefer = (settings.prefer + NPREFER + dir) % NPREFER; break;
+    case O_PREFER: case O_PREFER2: {   // every language Kino knows, and "" (the film's own / none) before the first
+      char *cur = opt_sel == O_PREFER ? settings.prefer1 : settings.prefer2, *other = opt_sel == O_PREFER ? settings.prefer2 : settings.prefer1;
+      int n = lang_count(), i = lang_index(cur), d = dir ? dir : 1;
+      do { i += d; if (i >= n) i = -1; if (i < -1) i = n - 1; } while (i >= 0 && !strcmp(lang_code_at(i), other));
+      snprintf(cur, 4, "%s", i < 0 ? "" : lang_code_at(i));
+      if (!*settings.prefer1 && *settings.prefer2) { snprintf(settings.prefer1, 4, "%s", settings.prefer2); settings.prefer2[0] = 0; }
+      break;
+    }
     case O_LEDS: settings.leds = !settings.leds; break;
     case O_HWDEC: settings.hwdec = !settings.hwdec; break;
     case O_QUALITY: settings.quality = (settings.quality + NQUALITY + dir) % NQUALITY; break;   // from the next film
@@ -1494,6 +1504,10 @@ static void shots(const char *out) {
   if (nitems > ROWS) { set_cursor(nitems - 2); wait_media(); shot(out, "browse-scrolled"); set_cursor(3); }
   play(2, 0); pump(1500); overlay_until = 0; pump(4500);   // the crop holds for 4 s before it's taken
   shot(out, "playing-subtitles");   // playing, no controls: the .srt next to it (build/shots.sh) in Noto Sans
+  { int was = settings.aspect;   // Stretch and 4:3 change the picture's shape, never the subtitles'
+    settings.aspect = ASPECT_STRETCH; player_apply_settings(); pump(800); shot(out, "playing-subtitles-stretch");
+    settings.aspect = ASPECT_4_3; player_apply_settings(); pump(800); shot(out, "playing-subtitles-4-3");
+    settings.aspect = was; player_apply_settings(); pump(400); }
   player_pause(1); pump(400);
   shot(out, "playing");
   on_button(BTN_RIGHT); pump(200); shot(out, "playing-seek");
