@@ -11,7 +11,9 @@ from the Greek *kínēma*, movement, by way of the cinematograph.
 <img src="docs/screens/browse-series.png" width="49%" alt="Browsing a series: the selected episode's picture, facts and resume time on the left, the episodes as rows on the right">
 <img src="docs/screens/local-grid.png" width="49%" alt="A folder of films as covers, made from frames of the films or a picture next to them">
 <img src="docs/screens/playing.png" width="49%" alt="Playing, paused: the time in dot-matrix numbers, rewind, play and forward, and a dotted progress bar">
-<img src="docs/screens/options.png" width="49%" alt="Options: aspect, picture, subtitles and Brick settings in four cards">
+<img src="docs/screens/next-episode.png" width="49%" alt="Up next: the next episode's picture and name, and a ten-second countdown in dots">
+<img src="docs/screens/options.png" width="49%" alt="Options in four tabs: Picture, Audio, Subtitles and Brick">
+<img src="docs/screens/options-audio.png" width="49%" alt="The Audio tab: the sound track, and the languages to prefer">
 <img src="docs/screens/jellyfin-connect.png" width="49%" alt="Jellyfin Quick Connect: a six-digit code to approve in the Jellyfin app">
 <img src="docs/screens/help-first-start.png" width="49%" alt="The buttons screen shown on the first start">
 </p>
@@ -27,6 +29,12 @@ Screens rendered headless from the app with test clips (`build/shots.sh`).
 - **Jellyfin:** finds the server on the network and logs in with Quick Connect (a code you approve in the Jellyfin
   app). Continue watching and Next up first, films and series as a cover grid, seasons and episodes as rows. Plays
   directly when the Brick can, otherwise the server converts it. Progress is reported back to the server.
+- **Up next:** when an episode ends, the next one plays after a 10-second countdown: the next file in the folder
+  on the SD card, or the series' next episode on Jellyfin. A plays it now, B stays in the list. Options > Brick >
+  Play next episode turns it off.
+- **Skip intro and credits:** on Jellyfin, where the server has marked a film's intro, recap, preview or end credits
+  (Jellyfin's media segments), a button shows at the bottom right while they play and X skips them. An episode's end
+  credits go straight to Up next.
 - **Streaming over Wi-Fi:** Jellyfin quality in Options sets the most the server may send (2, 4 or 8 Mbit/s, or
   max; 4 by default, plenty for the screen and light on the Brick's 2.4 GHz Wi-Fi); bigger files are converted to
   fit. A pill at the top shows when a film is buffering or waiting for the server, with a note when the Wi-Fi is
@@ -34,8 +42,11 @@ Screens rendered headless from the app with test clips (`build/shots.sh`).
   back to the list with your place kept. Wi-Fi power saving is off while a Jellyfin film plays.
 - **While playing:** picture filters (sharpen, warm, cool, black & white, retro CRT), aspect (original, 4:3, 16:9,
   stretch, zoom, or no bars: the film's own black bars cut away, so only pure black surrounds the picture), brightness
-  (it keeps black black), contrast, deinterlacing, subtitles (in Noto Sans, four sizes, from the film, a file next to
-  it or Jellyfin) with a preferred language, and the Brick's lights can follow the colour of the picture.
+  (it keeps black black), contrast, deinterlacing, and the Brick's lights can follow the colour of the picture.
+- **Sound and subtitles in your language:** the Audio and Subtitles tabs in Options each have Prefer and Then, chosen
+  from about 45 languages, and Kino picks the matching track itself (the film's own when neither is there). A track
+  you choose yourself is kept. This works for Jellyfin too, also when the server converts the film. Subtitles are in
+  Noto Sans, in four sizes, from the film, a file next to it or Jellyfin, and keep their shape with any aspect.
 
 ## Buttons
 
@@ -43,7 +54,7 @@ Screens rendered headless from the app with test clips (`build/shots.sh`).
 |---|---|---|
 | A | open, play, resume | pause |
 | B | back (quit at the top) | stop and save the place |
-| X | play from the start | |
+| X | play from the start | skip the intro, recap or credits (when the button shows) |
 | Y | options | options |
 | ◄ ► | a page (rows) or move (covers) | 10 seconds back, forward |
 | ▼ | | to the progress bar to scrub; A jumps there |
@@ -52,7 +63,8 @@ Screens rendered headless from the app with test clips (`build/shots.sh`).
 | SELECT | sort the covers: name, recently added, unwatched | subtitles on/off |
 | MENU | quit | quit (the place is saved) |
 
-In Options, X shows the buttons screen (it also opens on the first start).
+In Options, L1 / R1 change the tab and X shows the buttons screen (it also opens on the first start). On Up next,
+A plays the episode now and B stays in the list.
 
 ## Install
 
