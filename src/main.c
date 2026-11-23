@@ -424,7 +424,12 @@ static void jf_open(const char *id, const char *type, const char *name) {   // l
   start_job(J_LIST);
 }
 
+// No Wi-Fi link (off in the device settings, or no network in range): the Jellyfin row is greyed out and can't be
+// opened. Unknown (the first reading not in yet, or no Wi-Fi thread on headless screens) counts as there.
+static int jf_offline(void) { return wifi_state() == WIFI_OFF; }
+
 static void jf_enter(void) {   // from the SD card root
+  if (jf_offline()) { show_toast("No Wi-Fi: turn it on to use Jellyfin"); return; }
   if (!jf_logged_in()) {
     screen = SCR_CONNECT; jf_code[0] = 0;
     snprintf(connect_msg, sizeof connect_msg, "Looking for Jellyfin on the network…");
@@ -434,8 +439,7 @@ static void jf_enter(void) {   // from the SD card root
   jf_mode = 1; jf_depth = 0; jstack[0].cursor = 0;
   free(items); items = NULL; nitems = 0;
   jf_open("", "", "Jellyfin");
-  if (wifi_state() == WIFI_OFF) show_toast("No Wi-Fi: Jellyfin needs the network");
-  else if (wifi_state() == WIFI_WEAK) show_toast("Weak Wi-Fi: films may stop to buffer");
+  if (wifi_state() == WIFI_WEAK) show_toast("Weak Wi-Fi: films may stop to buffer");
 }
 
 static void jf_leave_level(void) {
@@ -702,6 +706,11 @@ static void draw_detail(void) {
   title_of(it->name, title, sizeof title);
   draw_thumb_area(56, 112, path, it->dir);
   dot_text(dot, DOT_TITLE, it->dir ? it->name : title, 70, 374, DOT_TEXT, DOT_LEFT, 400);
+  if (it->virt && jf_offline()) {
+    dot_text(dot, DOT_LABEL_T, "Server · no Wi-Fi", 70, 424, DOT_LABEL, DOT_LEFT, 400);
+    dot_text(dot, DOT_BODY_S, "Jellyfin needs Wi-Fi. Turn it on in the device settings.", 70, 470, DOT_LABEL, DOT_LEFT, 400);
+    return;
+  }
   if (it->virt) {
     dot_text(dot, DOT_LABEL_T, jf_logged_in() ? "Server · logged in" : "Server · not connected", 70, 424, DOT_LABEL, DOT_LEFT, 400);
     if (jf_logged_in()) dot_text(dot, DOT_BODY_S, jf_user_name(), 70, 470, DOT_TEXT, DOT_LEFT, 400);
@@ -847,9 +856,11 @@ static void draw_browse(void) {
       else if (st == RES_PARTIAL && dur > 0) snprintf(meta, sizeof meta, "%d%%", (int)(100 * pos / dur));
       else if (media_info(path, &mi) && mi.duration > 0) fmt_time(mi.duration, meta, sizeof meta);
     }
+    int off = items[i].virt && jf_offline();
+    if (off) snprintf(meta, sizeof meta, "NO WI-FI");
     int icon = items[i].virt ? DOT_I_TV : jf_mode && !strcmp(jitems[i].type, "Special") ? DOT_I_PLAY : items[i].dir ? DOT_I_FOLDER : DOT_I_FILM;
     dot_row(dot, 524, 96 + 94 * (i - top), 460, icon,
-            items[i].dir && !jf_mode ? items[i].name : title, NULL, meta, i == cursor ? DOT_FOCUS : 0, 0);
+            items[i].dir && !jf_mode ? items[i].name : title, NULL, meta, (i == cursor ? DOT_FOCUS : 0) | (off ? DOT_OFF : 0), 0);
   }
   DotHint h[4]; int n = 0;
   if (jf_mode) {
@@ -865,7 +876,8 @@ static void draw_browse(void) {
     dot_dock(dot, h, n);
     return;
   }
-  if (nitems && items[cursor].dir) h[n++] = (DotHint){ "A", "Open" };
+  if (nitems && items[cursor].virt && jf_offline()) ;   // greyed out: nothing to open
+  else if (nitems && items[cursor].dir) h[n++] = (DotHint){ "A", "Open" };
   else if (nitems) {
     char path[1400]; item_path(cursor, path, sizeof path);
     if (store_resume(path, NULL, NULL) == RES_PARTIAL) { h[n++] = (DotHint){ "A", "Resume" }; h[n++] = (DotHint){ "X", "From start" }; }
