@@ -22,6 +22,8 @@ i=1; for f in h264-480p.mp4 h264-720p.mp4 ../build/out/letterbox.mkv h264-1080p.
   n=$(echo "Dark Snow Ice Thaw Light" | cut -d' ' -f$i)
   ln -s ../../../../../../test/$f "$O/videos/Series/Northern/Episode $i · $n.${f##*.}"; i=$((i+1))
 done
+# more episodes than fit on a screen: the list scrolls (the dotted track, "1–5 of 9")
+for n in Frost Dusk Embers Dawn; do ln -s ../../../../../../test/h264-480p.mp4 "$O/videos/Series/Northern/Episode $i · $n.mp4"; i=$((i+1)); done
 ln -s ../../../../test/h264-480p.mp4 "$O/videos/Northern Lights Timelapse.mp4"
 # Subtitles next to the episode the playing shots use (episode 3, resumed at 42 %): shows the subtitle font works
 printf '1\n00:00:00,000 --> 01:00:00,000\nThe ice had held all winter.\nNow it sang under our boots.\n' > "$O/videos/Series/Northern/Episode 3 · Ice.srt"

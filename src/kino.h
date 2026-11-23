@@ -100,6 +100,7 @@ void player_apply_settings(void);
 int player_sub_tracks(void);               // number of subtitle tracks
 const char *player_sub_label(void);        // current track: "ENGLISH", "OFF", ...
 void player_cycle_sub(int dir);
+void player_sub_above(int pct);            // subtitles no lower than pct of the picture's height (100: mpv's own)
 Uint32 player_accent(void);                // dominant colour of recent frames
 void player_report(const char *file, double secs, long frames, double cpu);   // --bench line
 

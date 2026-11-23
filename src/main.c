@@ -28,6 +28,11 @@ enum { BTN_A = SDL_CONTROLLER_BUTTON_B, BTN_B = SDL_CONTROLLER_BUTTON_A, BTN_X =
        BTN_L2 = SDL_CONTROLLER_BUTTON_MAX + 1, BTN_R2 = SDL_CONTROLLER_BUTTON_MAX + 2 };   // triggers are axes in SDL
 enum { SCR_BROWSE, SCR_PLAY, SCR_OPTIONS, SCR_CONNECT, SCR_HELP };
 enum { O_ASPECT, O_BRIGHT, O_CONTRAST, O_DEINT, O_FILTER, O_SUBS, O_TRACK, O_PREFER, O_LEDS, O_HWDEC, O_QUALITY, NOPT };   // Ground light: settings.txt only
+// Options in tabs (L1/R1): each tab's options in order, the first one where a tab opens.
+#define NTABS 3
+static const char *TAB_NAMES[NTABS] = { "Picture", "Subtitles", "Brick" };
+static const int TAB_FIRST[NTABS + 1] = { O_ASPECT, O_SUBS, O_LEDS, NOPT };
+static int opt_tab(int o) { int t = 0; while (t + 1 < NTABS && o >= TAB_FIRST[t + 1]) t++; return t; }
 #define ROWS 5
 #define MAXDEPTH 32
 
@@ -268,6 +273,11 @@ static void want_media(void) {
     char url[600] = "";
     if (cursor < nitems && strcmp(jitems[cursor].type, "Special")) jf_image_url(&jitems[cursor], THUMB_W, THUMB_H, url, sizeof url);
     media_want(url, NULL, 0);
+    // the covers of the focused row and its neighbours: the blurred background behind the list
+    static char buf[3][600]; const char *urls[3]; int n = 0;
+    for (int i = cursor; i < nitems && i <= cursor + 1; i++) { jf_poster_url(&jitems[i], POSTER_W, POSTER_H, buf[n], sizeof buf[n]); urls[n] = buf[n]; n++; }
+    if (cursor > 0) { jf_poster_url(&jitems[cursor - 1], POSTER_W, POSTER_H, buf[n], sizeof buf[n]); urls[n] = buf[n]; n++; }
+    media_want_posters(urls, n);
     return;
   }
   const char *paths[ROWS]; static char buf[ROWS][1400];
@@ -622,6 +632,9 @@ static void stop(int ended) {
 }
 
 // --- drawing --------------------------------------------------------------------------------------------------
+// The picture on the info card, inset like everything else on a card (30 px); drawn a little smaller than it is made.
+#define CARD_PIC_W 360
+#define CARD_PIC_H (CARD_PIC_W * THUMB_H / THUMB_W)
 static void draw_thumb_area(int x, int y, const char *path, int is_dir) {
   int w = THUMB_W, h = THUMB_H;
   const uint8_t *rgb; Uint32 acc;
@@ -634,12 +647,12 @@ static void draw_thumb_area(int x, int y, const char *path, int is_dir) {
     }
   }
   if (!is_dir && !strcmp(thumb_for, path) && thumb_tex) {
-    SDL_Rect d = { x, y, w, h };
+    SDL_Rect d = { x, y, CARD_PIC_W, CARD_PIC_H };
     SDL_RenderCopy(ren, thumb_tex, NULL, &d);
-    dot_corners(dot, x, y, w, h, 20, DOT_CARD);
+    dot_corners(dot, x, y, CARD_PIC_W, CARD_PIC_H, 20, DOT_BG_GLASS);
   } else {
-    dot_rect(dot, x, y, w, h, 20, DOT_RAISED, 255);
-    dot_icon(dot, is_dir ? DOT_I_FOLDER : DOT_I_FILM, x + w / 2, y + h / 2, 72, DOT_DIM);
+    dot_rect(dot, x, y, CARD_PIC_W, CARD_PIC_H, 20, DOT_RAISED, 255);
+    dot_icon(dot, is_dir ? DOT_I_FOLDER : DOT_I_FILM, x + CARD_PIC_W / 2, y + CARD_PIC_H / 2, 72, DOT_DIM);
   }
 }
 
@@ -658,85 +671,85 @@ static void jf_label(const JfItem *it, char *out, size_t n) {   // "S1 · E3 · 
 }
 
 static void draw_detail_jf(void) {
-  dot_card(dot, 40, 96, 460, 528);
+  dot_card(dot, 40, 96, 420, 528);
   if (jf_loading || !nitems) {
     int all_seen = !jf_loading && jf_grid && settings.sort == SORT_UNWATCHED;
-    draw_thumb_area(56, 112, "", 1);
-    dot_text(dot, DOT_TITLE, jf_loading ? "Loading…" : all_seen ? "All seen" : "Nothing here", 70, 374, DOT_TEXT, DOT_LEFT, 400);
-    if (all_seen) dot_text(dot, DOT_BODY_S, "Press SELECT to show everything.", 70, 424, DOT_LABEL, DOT_LEFT, 400);
+    draw_thumb_area(70, 126, "", 1);
+    dot_text(dot, DOT_TITLE, jf_loading ? "Loading…" : all_seen ? "All seen" : "Nothing here", 70, 366, DOT_TEXT, DOT_LEFT, 360);
+    if (all_seen) dot_text(dot, DOT_BODY_S, "Press SELECT to show everything.", 70, 420, DOT_LABEL, DOT_LEFT, 360);
     return;
   }
   JfItem *it = &jitems[cursor];
   char url[600], buf[256];
   if (strcmp(it->type, "Special")) jf_image_url(it, THUMB_W, THUMB_H, url, sizeof url); else url[0] = 0;
-  draw_thumb_area(56, 112, url, url[0] == 0);
+  draw_thumb_area(70, 126, url, url[0] == 0);
   int ep_of_series = !strcmp(it->type, "Episode") && it->series[0];   // episodes: the series is the title
-  dot_text(dot, DOT_TITLE, ep_of_series ? it->series : it->name, 70, 374, DOT_TEXT, DOT_LEFT, 400);
+  dot_text(dot, DOT_TITLE, ep_of_series ? it->series : it->name, 70, 366, DOT_TEXT, DOT_LEFT, 360);
   jf_label(it, buf, sizeof buf);
   if (ep_of_series) { size_t l = strlen(buf); snprintf(buf + l, sizeof buf - l, " · %s", it->name); }
-  dot_text(dot, DOT_LABEL_T, buf, 70, 424, DOT_LABEL, DOT_LEFT, 400);
+  dot_text(dot, DOT_LABEL_T, buf, 70, 420, DOT_LABEL, DOT_LEFT, 360);
   if (it->folder) return;
   Uint32 acc = !strcmp(thumb_for, url) ? thumb_accent : DOT_ACCENT_KINO;
   if (it->pos > 0 && !it->played) {
-    dot_adot(dot, 70, 488, acc);
-    dot_text(dot, DOT_LABEL_T, "Resume", 102, 484, DOT_TEXT, DOT_LEFT, 0);
+    dot_adot(dot, 70, 478, acc);
+    dot_text(dot, DOT_LABEL_T, "Resume", 102, 478, DOT_TEXT, DOT_LEFT, 0);
     fmt_time(it->pos, buf, sizeof buf);
   } else {
-    dot_text(dot, DOT_LABEL_T, it->played ? "Seen" : "Length", 70, 484, DOT_LABEL, DOT_LEFT, 0);
+    dot_text(dot, DOT_LABEL_T, it->played ? "Seen" : "Length", 70, 478, DOT_LABEL, DOT_LEFT, 0);
     if (it->runtime > 0) fmt_time(it->runtime, buf, sizeof buf); else snprintf(buf, sizeof buf, "--:--");
   }
-  dot_time(dot, DOT_DISPLAY_L, buf, 68, 512, DOT_TEXT, DOT_LEFT);
-  dot_progress(dot, 70, 590, 400, it->played ? 1 : it->runtime > 0 ? (float)(it->pos / it->runtime) : 0, 0);
+  dot_time(dot, DOT_DISPLAY_L, buf, 68, 506, DOT_TEXT, DOT_LEFT);
+  dot_progress(dot, 70, 578, 360, it->played ? 1 : it->runtime > 0 ? (float)(it->pos / it->runtime) : 0, 0);
 }
 
 static void draw_detail(void) {
   if (jf_mode) { draw_detail_jf(); return; }
-  dot_card(dot, 40, 96, 460, 528);
+  dot_card(dot, 40, 96, 420, 528);
   if (!nitems) {
     int all_seen = local_grid && settings.sort == SORT_UNWATCHED;
-    draw_thumb_area(56, 112, "", 1);
-    dot_text(dot, DOT_TITLE, all_seen ? "All seen" : "No videos here", 70, 374, DOT_TEXT, DOT_LEFT, 400);
+    draw_thumb_area(70, 126, "", 1);
+    dot_text(dot, DOT_TITLE, all_seen ? "All seen" : "No videos here", 70, 366, DOT_TEXT, DOT_LEFT, 360);
     dot_text(dot, DOT_BODY_S, all_seen ? "Press SELECT to show everything." : "Put films and series in the Videos folder on the SD card.",
-             70, 424, DOT_LABEL, DOT_LEFT, 400);
+             70, 424, DOT_LABEL, DOT_LEFT, 360);
     return;
   }
   Item *it = &items[cursor];
   char path[1400], title[256], buf[64];
   item_path(cursor, path, sizeof path);
   title_of(it->name, title, sizeof title);
-  draw_thumb_area(56, 112, path, it->dir);
-  dot_text(dot, DOT_TITLE, it->dir ? it->name : title, 70, 374, DOT_TEXT, DOT_LEFT, 400);
+  draw_thumb_area(70, 126, path, it->dir);
+  dot_text(dot, DOT_TITLE, it->dir ? it->name : title, 70, 366, DOT_TEXT, DOT_LEFT, 360);
   if (it->virt && jf_offline()) {
-    dot_text(dot, DOT_LABEL_T, "Server · no Wi-Fi", 70, 424, DOT_LABEL, DOT_LEFT, 400);
-    dot_text(dot, DOT_BODY_S, "Jellyfin needs Wi-Fi. Turn it on in the device settings.", 70, 470, DOT_LABEL, DOT_LEFT, 400);
+    dot_text(dot, DOT_LABEL_T, "Server · no Wi-Fi", 70, 420, DOT_LABEL, DOT_LEFT, 360);
+    dot_text(dot, DOT_BODY_S, "Jellyfin needs Wi-Fi. Turn it on in the device settings.", 70, 462, DOT_LABEL, DOT_LEFT, 360);
     return;
   }
   if (it->virt) {
-    dot_text(dot, DOT_LABEL_T, jf_logged_in() ? "Server · logged in" : "Server · not connected", 70, 424, DOT_LABEL, DOT_LEFT, 400);
-    if (jf_logged_in()) dot_text(dot, DOT_BODY_S, jf_user_name(), 70, 470, DOT_TEXT, DOT_LEFT, 400);
-    else dot_text(dot, DOT_BODY_S, "Press A to connect with Quick Connect.", 70, 470, DOT_LABEL, DOT_LEFT, 400);
+    dot_text(dot, DOT_LABEL_T, jf_logged_in() ? "Server · logged in" : "Server · not connected", 70, 420, DOT_LABEL, DOT_LEFT, 360);
+    if (jf_logged_in()) dot_text(dot, DOT_BODY_S, jf_user_name(), 70, 462, DOT_TEXT, DOT_LEFT, 360);
+    else dot_text(dot, DOT_BODY_S, "Press A to connect with Quick Connect.", 70, 462, DOT_LABEL, DOT_LEFT, 360);
     return;
   }
   if (it->dir) {
     snprintf(buf, sizeof buf, folder_count == 1 ? "Folder · 1 item" : "Folder · %d items", folder_count);
-    dot_text(dot, DOT_LABEL_T, buf, 70, 424, DOT_LABEL, DOT_LEFT, 400);
+    dot_text(dot, DOT_LABEL_T, buf, 70, 420, DOT_LABEL, DOT_LEFT, 360);
     return;
   }
   MediaInfo mi; int known = media_info(path, &mi);
-  if (known) { media_label(&mi, buf, sizeof buf); dot_text(dot, DOT_LABEL_T, buf, 70, 424, DOT_LABEL, DOT_LEFT, 400); }
+  if (known) { media_label(&mi, buf, sizeof buf); dot_text(dot, DOT_LABEL_T, buf, 70, 420, DOT_LABEL, DOT_LEFT, 360); }
   double pos = 0, dur = known ? mi.duration : 0;
   int st = store_resume(path, &pos, NULL);
   Uint32 acc = !strcmp(thumb_for, path) ? thumb_accent : DOT_ACCENT_KINO;
   if (st == RES_PARTIAL) {
-    dot_adot(dot, 70, 488, acc);
-    dot_text(dot, DOT_LABEL_T, "Resume", 102, 484, DOT_TEXT, DOT_LEFT, 0);
+    dot_adot(dot, 70, 478, acc);
+    dot_text(dot, DOT_LABEL_T, "Resume", 102, 478, DOT_TEXT, DOT_LEFT, 0);
     fmt_time(pos, buf, sizeof buf);
   } else {
-    dot_text(dot, DOT_LABEL_T, st == RES_SEEN ? "Seen" : "Length", 70, 484, DOT_LABEL, DOT_LEFT, 0);
+    dot_text(dot, DOT_LABEL_T, st == RES_SEEN ? "Seen" : "Length", 70, 478, DOT_LABEL, DOT_LEFT, 0);
     if (dur > 0) fmt_time(dur, buf, sizeof buf); else snprintf(buf, sizeof buf, "--:--");
   }
-  dot_time(dot, DOT_DISPLAY_L, buf, 68, 512, DOT_TEXT, DOT_LEFT);
-  dot_progress(dot, 70, 590, 400, st == RES_SEEN ? 1 : st == RES_PARTIAL && dur > 0 ? (float)(pos / dur) : 0, 0);
+  dot_time(dot, DOT_DISPLAY_L, buf, 68, 506, DOT_TEXT, DOT_LEFT);
+  dot_progress(dot, 70, 578, 360, st == RES_SEEN ? 1 : st == RES_PARTIAL && dur > 0 ? (float)(pos / dur) : 0, 0);
 }
 
 static SDL_Texture *poster_tex(const char *url) {   // the cover's texture once the worker has it
@@ -759,6 +772,7 @@ static void len_label(double secs, char *out, size_t n) {   // "1h 52m", "44 min
   if (m >= 60) snprintf(out, n, "%dh %02dm", m / 60, m % 60); else if (m) snprintf(out, n, "%d min", m); else out[0] = 0;
 }
 
+static int amb_on;   // the grid has its picture background (light header, night dock)
 static void draw_grid(void) {   // 5 x 2 covers; the focused one's name in the header
   char label[96], lab[64], name[256];
   int folder, resumable = 0;
@@ -785,8 +799,8 @@ static void draw_grid(void) {   // 5 x 2 covers; the focused one's name in the h
   }
   snprintf(label, sizeof label, "%s%s%d / %d", lab, *lab ? " · " : "", cursor + 1, nitems);
   int lw = dot_text_w(dot, DOT_LABEL_T, label);
-  dot_text(dot, DOT_TITLE, name, 40, 22, 0x161616, DOT_LEFT, 944 - lw - 40);
-  dot_text(dot, DOT_LABEL_T, label, 984, 30, 0x161616, DOT_RIGHT, 0);
+  dot_text(dot, DOT_TITLE, name, 40, 22, DOT_ON_GROUND, DOT_LEFT, 944 - lw - 40);
+  dot_text(dot, DOT_LABEL_T, label, 984, 30, DOT_ON_GROUND, DOT_RIGHT, 0);
   for (int i = top; i < nitems && i < top + GPAGE; i++) {
     char url[1100] = ""; float prog = 0; int seen = 0, fresh = 0;
     if (jf_mode) {
@@ -811,13 +825,127 @@ static void draw_grid(void) {   // 5 x 2 covers; the focused one's name in the h
   h[n++] = (DotHint){ "SELECT", "Sort" };
   h[n++] = (DotHint){ "B", jf_mode || depth ? "Back" : "Quit" };
   h[n++] = (DotHint){ "Y", "Options" };
+  dot_set_night(dot, amb_on);   // over the picture: the dark glass dock with light text
   dot_dock(dot, h, n);
+  dot_set_night(dot, 0);
+}
+
+// The grid's background: the focused cover, blurred and darkened, crossfading as the focus moves. Blurred cheaply:
+// the cover is drawn into 44x66, that into 11x17, and that stretched over the screen with smooth scaling. A copy of
+// the 11x17 stays in memory so posters' rounded corners can take the colour behind them.
+#define AMB_W 11
+#define AMB_H 17
+#define AMB_DARK 150   // black over it (of 255): white text and the night dock stay readable
+#define AMB_BW 176   // the smooth picture made from the 11x17 on the CPU (renderers that only scale blocky)
+#define AMB_BH 272
+static SDL_Texture *amb_mid, *amb[2], *amb_big[2];
+static Uint32 amb_bigpx[AMB_BW * AMB_BH];
+static Uint32 amb_px[2][AMB_W * AMB_H], amb_t0;
+static int amb_cur, amb_n;   // amb_n: pictures made since the grid opened (0: none yet)
+static char amb_key[1100];
+static const SDL_Rect AMB_DST = { -40, -444, W + 80, (W + 80) * 3 / 2 };   // a 2:3 cover filling the width
+static Uint32 amb_backdrop(float x, float y) {   // the darkened picture's colour at a screen point
+  float u = (x - AMB_DST.x) / AMB_DST.w * AMB_W - .5f, v = (y - AMB_DST.y) / AMB_DST.h * AMB_H - .5f;
+  int x0 = u < 0 ? 0 : u > AMB_W - 1 ? AMB_W - 1 : (int)u, y0 = v < 0 ? 0 : v > AMB_H - 1 ? AMB_H - 1 : (int)v;
+  int x1 = x0 + 1 < AMB_W ? x0 + 1 : x0, y1 = y0 + 1 < AMB_H ? y0 + 1 : y0;
+  float fx = u - x0, fy = v - y0; fx = fx < 0 ? 0 : fx > 1 ? 1 : fx; fy = fy < 0 ? 0 : fy > 1 ? 1 : fy;
+  const Uint32 *px = amb_px[amb_cur]; Uint32 o = 0;
+  for (int sh = 0; sh < 24; sh += 8) {
+    float a = (px[y0 * AMB_W + x0] >> sh & 255) * (1 - fx) + (px[y0 * AMB_W + x1] >> sh & 255) * fx;
+    float b = (px[y1 * AMB_W + x0] >> sh & 255) * (1 - fx) + (px[y1 * AMB_W + x1] >> sh & 255) * fx;
+    o |= (Uint32)((a * (1 - fy) + b * fy) * (255 - AMB_DARK) / 255 + .5f) << sh;
+  }
+  return o;
+}
+static int amb_broken;   // the device can't make the textures: the plain ground, for good
+static int ambient(const char *url) {   // draws the background; 0 when there is no picture yet (the ground then)
+  SDL_Texture *src = *url && !amb_broken ? poster_tex(url) : NULL;
+  if (src) {
+    static Uint32 want_at; static char want[1100];   // holding the d-pad: rebuild only once the focus rests 120 ms
+    if (strcmp(want, url)) { snprintf(want, sizeof want, "%s", url); want_at = SDL_GetTicks() + (amb_n && !shots_mode ? 120 : 0); }
+    if (SDL_GetTicks() < want_at) src = NULL;
+  }
+  if (src && strcmp(amb_key, url)) {
+    if (!amb_mid) {
+      const char *was = SDL_GetHint(SDL_HINT_RENDER_SCALE_QUALITY); char keep[16]; snprintf(keep, sizeof keep, "%s", was ? was : "0");
+      SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+      amb_mid = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, 44, 66);
+      for (int k = 0; k < 2; k++) {
+        amb[k] = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, AMB_W, AMB_H);
+        amb_big[k] = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, AMB_BW, AMB_BH);
+      }
+      SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, keep);
+      if (!amb_mid || !amb[0] || !amb[1] || !amb_big[0] || !amb_big[1]) {   // all or nothing: no leak, no retry every cover
+        SDL_Texture **all[5] = { &amb_mid, &amb[0], &amb[1], &amb_big[0], &amb_big[1] };
+        for (int k = 0; k < 5; k++) if (*all[k]) { SDL_DestroyTexture(*all[k]); *all[k] = NULL; }
+        amb_broken = 1;
+      }
+    }
+    if (amb_mid && amb[0] && amb[1] && amb_big[0] && amb_big[1]) {
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+      SDL_SetTextureScaleMode(src, SDL_ScaleModeLinear);
+#endif
+      int k = amb_n ? !amb_cur : amb_cur;
+      SDL_SetRenderTarget(ren, amb_mid); SDL_RenderCopy(ren, src, NULL, NULL);
+      SDL_SetRenderTarget(ren, amb[k]); SDL_RenderCopy(ren, amb_mid, NULL, NULL);
+      SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_ARGB8888, amb_px[k], AMB_W * 4);
+      SDL_SetRenderTarget(ren, NULL);
+      // 11x17 -> 66x102, bilinear with smoothstep between the samples: soft, no blocks
+      for (int y = 0; y < AMB_BH; y++) for (int x = 0; x < AMB_BW; x++) {
+        float u = (x + .5f) * AMB_W / AMB_BW - .5f, v = (y + .5f) * AMB_H / AMB_BH - .5f;
+        int x0 = u < 0 ? 0 : (int)u, y0 = v < 0 ? 0 : (int)v, x1 = x0 + 1 < AMB_W ? x0 + 1 : x0, y1 = y0 + 1 < AMB_H ? y0 + 1 : y0;
+        float fx = u - x0, fy = v - y0; fx = fx < 0 ? 0 : fx; fy = fy < 0 ? 0 : fy;
+        fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+        const Uint32 *px = amb_px[k]; Uint32 o = 0xff000000;
+        for (int sh = 0; sh < 24; sh += 8) {
+          float a = (px[y0 * AMB_W + x0] >> sh & 255) * (1 - fx) + (px[y0 * AMB_W + x1] >> sh & 255) * fx;
+          float b = (px[y1 * AMB_W + x0] >> sh & 255) * (1 - fx) + (px[y1 * AMB_W + x1] >> sh & 255) * fx;
+          o |= (Uint32)(a * (1 - fy) + b * fy + .5f) << sh;
+        }
+        amb_bigpx[y * AMB_BW + x] = o;
+      }
+      SDL_UpdateTexture(amb_big[k], NULL, amb_bigpx, AMB_BW * 4);
+      amb_cur = k; amb_n++; amb_t0 = SDL_GetTicks();
+      snprintf(amb_key, sizeof amb_key, "%s", url);
+    }
+  }
+  if (!amb_n) return 0;
+  float t = shots_mode ? 1 : (SDL_GetTicks() - amb_t0) / 250.f; if (t > 1) t = 1;
+  if (amb_n == 1) dot_ground(dot);   // the first picture fades in over the ground
+  else { SDL_SetTextureAlphaMod(amb_big[!amb_cur], 255); SDL_RenderCopy(ren, amb_big[!amb_cur], NULL, &AMB_DST); }
+  SDL_SetTextureBlendMode(amb_big[amb_cur], SDL_BLENDMODE_BLEND);
+  SDL_SetTextureAlphaMod(amb_big[amb_cur], (Uint8)(255 * t));
+  SDL_RenderCopy(ren, amb_big[amb_cur], NULL, &AMB_DST);
+  SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+  SDL_SetRenderDrawColor(ren, 0, 0, 0, AMB_DARK);
+  SDL_RenderFillRect(ren, NULL);
+  SDL_Rect band = { 0, 0, W, 84 }; SDL_SetRenderDrawColor(ren, 0, 0, 0, 70); SDL_RenderFillRect(ren, &band);   // the header reads on any cover
+  return 1;
+}
+static const char *focused_cover(char *buf, size_t n) {
+  if (jf_mode) { jf_poster_url(&jitems[cursor], POSTER_W, POSTER_H, buf, n); return buf; }
+  snprintf(buf, n, "%s", cover_of(cursor)); return buf;
 }
 
 static void draw_browse(void) {
   dot_set_ground(dot, settings.ground ? DOT_GROUND_TOPCENTRE : DOT_GROUND_TOPLEFT);
-  dot_ground(dot);
-  if (in_grid()) { draw_grid(); return; }
+  dot_set_backdrop(dot, NULL);
+  if (in_grid()) {
+    char u[1100];
+    amb_on = ambient(focused_cover(u, sizeof u));
+    if (!amb_on) dot_ground(dot); else dot_set_backdrop(dot, amb_backdrop);
+    draw_grid();
+    dot_set_backdrop(dot, NULL);
+    return;
+  }
+  if (jf_mode && nitems && !jf_loading && strcmp(jitems[cursor].type, "Special")) {   // Jellyfin lists: the same background
+    char u[1100]; jf_poster_url(&jitems[cursor], POSTER_W, POSTER_H, u, sizeof u);
+    amb_on = ambient(u);
+    if (!amb_on) dot_ground(dot); else dot_set_backdrop(dot, amb_backdrop);
+  } else {
+    amb_key[0] = 0; amb_n = 0; amb_on = 0;
+    dot_ground(dot);
+  }
   // Crumb: "SD card / Videos / ...", only the last two folders when it's deeper than that.
   char crumb[700], count[32], rel[1100];
   snprintf(crumb, sizeof crumb, strcmp(root, home) ? "SD card" : "SD card / Videos");
@@ -835,9 +963,12 @@ static void draw_browse(void) {
   for (int i = np > 2 ? np - 2 : 0; i < np; i++) {
     size_t l = strlen(crumb); snprintf(crumb + l, sizeof crumb - l, " / %s", part[i]);
   }
-  snprintf(count, sizeof count, nitems == 1 ? "1 item" : "%d items", nitems);
+  if (nitems > ROWS) snprintf(count, sizeof count, "%d–%d of %d", top + 1, top + ROWS < nitems ? top + ROWS : nitems, nitems);
+  else snprintf(count, sizeof count, nitems == 1 ? "1 item" : "%d items", nitems);
   dot_header(dot, crumb, count);
   draw_detail();
+  int mixed = 0;   // folders (or the Jellyfin row) among the videos: keep the film icon to tell them apart
+  for (int i = 0; i < nitems && !mixed; i++) mixed = items[i].dir || items[i].virt;
   for (int i = top; i < nitems && i < top + ROWS; i++) {
     char title[256], meta[32] = "", path[1400];
     title_of(items[i].name, title, sizeof title);
@@ -859,8 +990,17 @@ static void draw_browse(void) {
     int off = items[i].virt && jf_offline();
     if (off) snprintf(meta, sizeof meta, "NO WI-FI");
     int icon = items[i].virt ? DOT_I_TV : jf_mode && !strcmp(jitems[i].type, "Special") ? DOT_I_PLAY : items[i].dir ? DOT_I_FOLDER : DOT_I_FILM;
-    dot_row(dot, 524, 96 + 94 * (i - top), 460, icon,
+    if (icon == DOT_I_FILM && !mixed) icon = DOT_I_NONE;   // only videos here: the icon says nothing, the title gets the room
+    dot_row(dot, 476, 96 + (DOT_ROW_H + 12) * (i - top), 484, icon,
             items[i].dir && !jf_mode ? items[i].name : title, NULL, meta, (i == cursor ? DOT_FOCUS : 0) | (off ? DOT_OFF : 0), 0);
+  }
+  if (nitems > ROWS) {   // more than a screen: a dotted track in the right margin, the part in view lit
+    int y0 = 96 + 6, y1 = 96 + (DOT_ROW_H + 12) * ROWS - 12 - 6, n = (y1 - y0) / DOT_DOT_PITCH + 1;
+    float a = (float)top / nitems, b = (float)(top + ROWS) / nitems;
+    for (int k = 0; k < n; k++) {
+      float c = (k + .5f) / n; int lit = c >= a && c <= b, cy = y0 + k * DOT_DOT_PITCH;
+      dot_rect(dot, 974 - DOT_DOT_R, cy - DOT_DOT_R, 2 * DOT_DOT_R, 2 * DOT_DOT_R, DOT_DOT_R, DOT_TEXT, lit ? 255 : 90);
+    }
   }
   DotHint h[4]; int n = 0;
   if (jf_mode) {
@@ -923,7 +1063,7 @@ static void draw_overlay(void) {
   double pos = player_pos(), len = player_duration();
   int paused = player_paused();
   if (on_bar) pos = scrub_to;
-  dot_card(dot, 40, 500, 944, 232);
+  dot_set_night(dot, 1); dot_card(dot, 40, 500, 944, 232); dot_set_night(dot, 0);   // solid over video
   fmt_time(pos, buf, sizeof buf);
   int tw = dot_time(dot, DOT_DISPLAY_XL, buf, 76, 526, DOT_TEXT, DOT_LEFT);
   int lx = 76 + tw + 30;
@@ -936,7 +1076,7 @@ static void draw_overlay(void) {
   dot_round(dot, 806, 570, paused ? DOT_I_PLAY : DOT_I_PAUSE, 1, seeking || on_bar ? 0 : DOT_FOCUS);
   dot_round(dot, 900, 570, DOT_I_FWD, 0, seeking > 0 ? DOT_FOCUS | DOT_ON : 0);
   dot_progress(dot, 76, 644, 872, len > 0 ? (float)(pos / len) : 0, on_bar ? 2 : 1);
-  dot_text(dot, DOT_LABEL_T, on_bar ? "◀ ▶ move · L1 R1 faster · A jump here · B cancel" : "◀ ▶ 10 s · ▼ scrub · L1 R1 filter · L2 R2 aspect",
+  dot_text(dot, DOT_PILL_MONO, on_bar ? "◀ ▶ move · L1 R1 faster · A jump here · B cancel" : "◀ ▶ 10 s · ▼ scrub · L1 R1 filter · L2 R2 aspect",
            76, 690, DOT_LABEL, DOT_LEFT, 872);
 }
 
@@ -993,36 +1133,49 @@ static void draw_net_status(void) {
 
 static const char *DEINTS[NDEINT] = { "AUTO", "ON", "OFF" };
 
+// Tabs at the top right, between L1 and R1 key caps; the active one lit.
+static void draw_tabs(const char *const *names, int n, int active) {
+  int tx = DOT_W - DOT_MARGIN;
+  tx -= dot_text_w(dot, DOT_KEY_WIDE, "R1") + 40; dot_key(dot, tx, 25, "R1", 0, 0); tx -= 12;
+  for (int i = n - 1; i >= 0; i--) { tx -= dot_text_w(dot, DOT_CHIP_T, names[i]) + 40; dot_chip(dot, tx, 28, names[i], i == active ? DOT_ON : 0); tx -= 8; }
+  tx -= 4 + dot_text_w(dot, DOT_KEY_WIDE, "L1") + 40; dot_key(dot, tx, 25, "L1", 0, 0);
+}
+
 static void draw_options(void) {
   int night = opt_back == SCR_PLAY;
   if (night) { draw_video(); dot_scrim(dot); }
   else { dot_set_ground(dot, settings.ground ? DOT_GROUND_TOPCENTRE : DOT_GROUND_TOPLEFT); dot_ground(dot); }
   dot_set_night(dot, night);
   dot_title(dot, "OPTIONS");
-  dot_header(dot, NULL, "B close");
   int f[NOPT]; for (int i = 0; i < NOPT; i++) f[i] = opt_sel == i ? DOT_FOCUS : 0;
-  // Two columns of 464, cards 16 apart; heights follow their content (chips wrap to two lines).
-  int P = DOT_OPT_PITCH, ha = dot_panel_h(6 + 2 * DOT_CHIP_H + 10), hp = dot_panel_h(4 * P - 8), hs = dot_panel_h(3 * P - 8), hb = dot_panel_h(3 * P - 8);
-  int y = dot_panel(dot, 40, 96, 464, ha, "Aspect");
-  dot_chips(dot, 70, y + 6, 404, ASPECT_NAMES, NASPECT, settings.aspect, opt_sel == O_ASPECT ? settings.aspect : -1);
-  y = dot_panel(dot, 40, 96 + ha + 16, 464, hp, "Picture");
-  dot_opt_slider(dot, 70, y, 404, "Brightness", (settings.brightness + 50) / 100.f, f[O_BRIGHT]);
-  dot_opt_slider(dot, 70, y + P, 404, "Contrast", (settings.contrast + 50) / 100.f, f[O_CONTRAST]);
-  dot_opt(dot, 70, y + 2 * P, 404, "Deinterlace", DEINTS[settings.deint], f[O_DEINT]);
-  char fname[32]; snprintf(fname, sizeof fname, "%s", FILTER_NAMES[settings.filter]);
-  for (char *q = fname; *q; q++) if (*q >= 'a' && *q <= 'z') *q -= 32;
-  dot_opt(dot, 70, y + 3 * P, 404, "Filter", fname, f[O_FILTER]);
-  y = dot_panel(dot, 520, 96, 464, hs, "Subtitles");
-  // Show and size in one row: OFF, S, M, L, XL (A: on/off, keeping the size; SELECT while playing does the same)
-  char show[24]; snprintf(show, sizeof show, "%s", settings.subs ? SUBSIZE_NAMES[settings.subsize] : "OFF");
-  dot_opt(dot, 550, y, 404, "Show · size", show, f[O_SUBS]);
-  dot_opt(dot, 550, y + P, 404, "Track", player_sub_label(), f[O_TRACK] | (player_active() ? 0 : DOT_OFF));
-  dot_opt(dot, 550, y + 2 * P, 404, "Prefer", PREFER_LABELS[settings.prefer], f[O_PREFER]);
-  y = dot_panel(dot, 520, 96 + hs + 16, 464, hb, "Brick");
-  dot_opt_toggle(dot, 550, y, 404, "Lights follow video", settings.leds, f[O_LEDS]);
-  dot_opt_toggle(dot, 550, y + P, 404, "Hardware decoding", settings.hwdec, f[O_HWDEC]);
-  dot_opt(dot, 550, y + 2 * P, 404, "Jellyfin quality", QUALITY_NAMES[settings.quality], f[O_QUALITY]);
-  DotHint h[] = { { "A", "Change" }, { "<>", "Adjust" }, { "X", "Buttons" }, { "B", "Close" } };
+  // Tabs (L1/R1) at the top right, the active one lit; one full-width card below with the tab's rows.
+  int tab = opt_tab(opt_sel);
+  draw_tabs(TAB_NAMES, NTABS, tab);
+  int P = DOT_OPT_PITCH, x = 70, cw = 884, y;
+  if (tab == 0) {
+    y = dot_panel(dot, 40, 108, 944, dot_panel_h(DOT_CHIP_H + 24 + 4 * P - 8) - 46, NULL);
+    dot_chips(dot, x, y + 4, cw, ASPECT_NAMES, NASPECT, settings.aspect, opt_sel == O_ASPECT ? settings.aspect : -1);
+    y += DOT_CHIP_H + 24;
+    dot_opt_slider(dot, x, y, cw, "Brightness", (settings.brightness + 50) / 100.f, f[O_BRIGHT]);
+    dot_opt_slider(dot, x, y + P, cw, "Contrast", (settings.contrast + 50) / 100.f, f[O_CONTRAST]);
+    dot_opt(dot, x, y + 2 * P, cw, "Deinterlace", DEINTS[settings.deint], f[O_DEINT]);
+    char fname[32]; snprintf(fname, sizeof fname, "%s", FILTER_NAMES[settings.filter]);
+    for (char *q = fname; *q; q++) if (*q >= 'a' && *q <= 'z') *q -= 32;
+    dot_opt(dot, x, y + 3 * P, cw, "Filter", fname, f[O_FILTER]);
+  } else if (tab == 1) {
+    y = dot_panel(dot, 40, 108, 944, dot_panel_h(3 * P - 8) - 46, NULL);
+    // Show and size in one row: OFF, S, M, L, XL (A: on/off, keeping the size; SELECT while playing does the same)
+    char show[24]; snprintf(show, sizeof show, "%s", settings.subs ? SUBSIZE_NAMES[settings.subsize] : "OFF");
+    dot_opt(dot, x, y, cw, "Show · size", show, f[O_SUBS]);
+    dot_opt(dot, x, y + P, cw, "Track", player_sub_label(), f[O_TRACK] | (player_active() ? 0 : DOT_OFF));
+    dot_opt(dot, x, y + 2 * P, cw, "Prefer", PREFER_LABELS[settings.prefer], f[O_PREFER]);
+  } else {
+    y = dot_panel(dot, 40, 108, 944, dot_panel_h(3 * P - 8) - 46, NULL);
+    dot_opt_toggle(dot, x, y, cw, "Lights follow video", settings.leds, f[O_LEDS]);
+    dot_opt_toggle(dot, x, y + P, cw, "Hardware decoding", settings.hwdec, f[O_HWDEC]);
+    dot_opt(dot, x, y + 2 * P, cw, "Jellyfin quality", QUALITY_NAMES[settings.quality], f[O_QUALITY]);
+  }
+  DotHint h[] = { { "<>", "Change" }, { "L1 R1", "Section" }, { "X", "Buttons" }, { "B", "Close" } };   // A changes too
   dot_dock(dot, h, 4);
   dot_set_night(dot, 0);
 }
@@ -1031,16 +1184,16 @@ static void draw_connect(void) {   // Quick Connect: the code in dots, approved 
   dot_set_ground(dot, settings.ground ? DOT_GROUND_TOPCENTRE : DOT_GROUND_TOPLEFT);
   dot_ground(dot);
   dot_title(dot, "JELLYFIN");
-  dot_header(dot, NULL, "B back");
   int y = dot_panel(dot, 40, 96, 944, 440, "Quick Connect");
   if (jf_code[0]) {
     char spaced[16]; snprintf(spaced, sizeof spaced, "%.3s %.3s", jf_code, jf_code + 3);
     dot_text(dot, DOT_DISPLAY_XL, spaced, 70, y + 20, DOT_TEXT, DOT_LEFT, 0);
-    dot_text(dot, DOT_BODY_S, "In Jellyfin on your phone or computer, open your profile, choose Quick Connect", 70, y + 150, DOT_TEXT, DOT_LEFT, 884);
-    dot_text(dot, DOT_BODY_S, "and enter this code. Kino logs in by itself.", 70, y + 184, DOT_TEXT, DOT_LEFT, 884);
-    dot_adot(dot, 70, y + 262, DOT_ACCENT_KINO);
-    dot_text(dot, DOT_LABEL_T, "Waiting", 102, y + 258, DOT_TEXT, DOT_LEFT, 0);
-    dot_text(dot, DOT_LABEL_T, connect_msg, 70, y + 300, DOT_LABEL, DOT_LEFT, 884);
+    dot_text(dot, DOT_BODY_S, "In Jellyfin on your phone or computer, open your profile,", 70, y + 140, DOT_TEXT, DOT_LEFT, 884);
+    dot_text(dot, DOT_BODY_S, "choose Quick Connect and enter this code.", 70, y + 178, DOT_TEXT, DOT_LEFT, 884);
+    dot_text(dot, DOT_BODY_S, "Kino logs in by itself.", 70, y + 216, DOT_LABEL, DOT_LEFT, 884);
+    dot_adot(dot, 70, y + 287, DOT_ACCENT_KINO);
+    dot_text(dot, DOT_LABEL_T, "Waiting", 102, y + 278, DOT_TEXT, DOT_LEFT, 0);
+    dot_text(dot, DOT_LABEL_T, connect_msg, 70, y + 322, DOT_LABEL, DOT_LEFT, 884);
   } else {
     dot_text(dot, DOT_TITLE, connect_msg, 70, y + 30, DOT_TEXT, DOT_LEFT, 884);
   }
@@ -1056,12 +1209,13 @@ static const DotHint HELP_BROWSE[] = { { "A", "Open, play, resume" }, { "X", "Pl
 static const DotHint HELP_PLAY[] = { { "A", "Pause" }, { "<>", "10 seconds back, on" }, { "DOWN", "Scrub, A jumps there" },
   { "L1 R1", "Picture filter" }, { "L2 R2", "Aspect" }, { "SELECT", "Subtitles on, off" }, { "B", "Stop, save the place" } };
 
-static void draw_help_panel(int x, const char *label, const DotHint *h, int n) {
-  enum { PITCH = 64 };   // a key cap is 58 high
-  int y = dot_panel(dot, x, 96, 464, dot_panel_h(n * PITCH - 6), label);
+static int help_tab;   // 0 browsing, 1 playing (L1/R1)
+static void draw_help_panel(const DotHint *h, int n) {
+  enum { PITCH = 68 };   // a key cap is 62 high
+  int y = dot_panel(dot, 40, 108, 944, dot_panel_h(n * PITCH - 6) - 46, NULL);
   for (int i = 0; i < n; i++, y += PITCH) {
-    dot_key(dot, x + 30, y, h[i].key, 0, 2);   // raised: on a black card
-    dot_text(dot, DOT_UI, h[i].text, x + 30 + 150, y + (DOT_KEY - dot_line_h(dot, DOT_UI)) / 2, DOT_TEXT, DOT_LEFT, 464 - 60 - 150);
+    dot_key(dot, 70, y, h[i].key, 0, 2);   // raised: on a black card
+    dot_text(dot, DOT_UI, h[i].text, 70 + 170, y + (DOT_KEY - dot_line_h(dot, DOT_UI)) / 2, DOT_TEXT, DOT_LEFT, 884 - 170);
   }
 }
 
@@ -1069,16 +1223,18 @@ static void draw_help(void) {
   dot_set_ground(dot, settings.ground ? DOT_GROUND_TOPCENTRE : DOT_GROUND_TOPLEFT);
   dot_ground(dot);
   dot_title(dot, "BUTTONS");
-  dot_header(dot, NULL, help_back == SCR_OPTIONS ? "B close" : NULL);
-  draw_help_panel(40, "Browsing", HELP_BROWSE, 7);
-  draw_help_panel(520, "Playing", HELP_PLAY, 7);
-  DotHint h[1] = { help_back == SCR_OPTIONS ? (DotHint){ "B", "Close" } : (DotHint){ "A", "Got it" } };
-  dot_dock(dot, h, 1);
+  static const char *const names[2] = { "Browsing", "Playing" };
+  draw_tabs(names, 2, help_tab);
+  if (help_tab) draw_help_panel(HELP_PLAY, 7); else draw_help_panel(HELP_BROWSE, 7);
+  DotHint h[2] = { help_back == SCR_OPTIONS ? (DotHint){ "B", "Close" } : (DotHint){ "A", "Got it" },
+                   { "L1 R1", help_tab ? "Browsing" : "Playing" } };
+  dot_dock(dot, h, 2);
 }
 
 static void draw(void) {
   dot_frame(dot);
   dot_set_accent(dot, DOT_ACCENT_KINO);
+  dot_set_backdrop(dot, NULL);   // only the browser sets one, for its own frame
   Uint32 now = SDL_GetTicks();
   if (screen == SCR_BROWSE) draw_browse();
   else if (screen == SCR_CONNECT) draw_connect();
@@ -1086,7 +1242,9 @@ static void draw(void) {
   else if (screen == SCR_HELP) draw_help();
   else {
     draw_video();
-    if (player_paused() || on_bar || now < overlay_until) draw_overlay();
+    int controls = player_paused() || on_bar || now < overlay_until;
+    player_sub_above(controls ? 64 : 100);   // the panel covers the bottom third: subtitles go above it
+    if (controls) draw_overlay();
     if (now < info_until) dot_pill(dot, W / 2, 36, info, 0, 1, DOT_CENTER);
     else draw_net_status();
   }
@@ -1162,6 +1320,7 @@ static void on_button(int b) {
     return;
   }
   if (screen == SCR_HELP) {
+    if (b == BTN_L1 || b == BTN_R1 || b == BTN_LEFT || b == BTN_RIGHT) { help_tab = !help_tab; return; }
     if (b == BTN_A || b == BTN_B || b == BTN_X || b == BTN_Y) {
       screen = help_back;
       if (!settings.intro) { settings.intro = 1; settings_save(); }
@@ -1170,9 +1329,12 @@ static void on_button(int b) {
   }
   if (screen == SCR_OPTIONS) {
     switch (b) {
-      case BTN_X: help_back = SCR_OPTIONS; screen = SCR_HELP; break;
-      case BTN_UP: opt_sel = (opt_sel + NOPT - 1) % NOPT; break;
-      case BTN_DOWN: opt_sel = (opt_sel + 1) % NOPT; break;
+      case BTN_X: help_back = SCR_OPTIONS; help_tab = opt_back == SCR_PLAY; screen = SCR_HELP; break;
+      case BTN_UP: case BTN_DOWN: {   // within the tab, round
+        int t = opt_tab(opt_sel), a = TAB_FIRST[t], n = TAB_FIRST[t + 1] - a;
+        opt_sel = a + (opt_sel - a + n + (b == BTN_UP ? -1 : 1)) % n; break;
+      }
+      case BTN_L1: case BTN_R1: opt_sel = TAB_FIRST[(opt_tab(opt_sel) + NTABS + (b == BTN_L1 ? -1 : 1)) % NTABS]; break;
       case BTN_LEFT: change_option(-1); break;
       case BTN_RIGHT: change_option(1); break;
       case BTN_A: change_option(opt_sel == O_SUBS ? 0 : 1); break;
@@ -1329,6 +1491,7 @@ static void shots(const char *out) {
   set_cursor(2); wait_media(); shot(out, "browse-series");
   settings.ground = 1; shot(out, "browse-series-ground-centre"); settings.ground = 0;
   set_cursor(3); wait_media(); shot(out, "browse-new");
+  if (nitems > ROWS) { set_cursor(nitems - 2); wait_media(); shot(out, "browse-scrolled"); set_cursor(3); }
   play(2, 0); pump(1500); overlay_until = 0; pump(4500);   // the crop holds for 4 s before it's taken
   shot(out, "playing-subtitles");   // playing, no controls: the .srt next to it (build/shots.sh) in Noto Sans
   player_pause(1); pump(400);
@@ -1348,8 +1511,10 @@ static void shots(const char *out) {
   close_options(); stop(0); shot(out, "browse-toast");
   toast_until = 0; open_options(); opt_sel = O_ASPECT; shot(out, "options");
   opt_sel = O_SUBS; settings.subsize = SUBSIZE_L; shot(out, "options-subsize"); settings.subsize = SUBSIZE_M;
+  opt_sel = O_HWDEC; shot(out, "options-brick");
   on_button(BTN_X); shot(out, "help-from-options"); on_button(BTN_B);
-  help_back = SCR_BROWSE; screen = SCR_HELP; shot(out, "help-first-start"); screen = SCR_OPTIONS;
+  help_back = SCR_BROWSE; help_tab = 0; screen = SCR_HELP; shot(out, "help-first-start");
+  help_tab = 1; shot(out, "help-playing"); help_tab = 0; screen = SCR_OPTIONS;
   screen = SCR_CONNECT; snprintf(jf_code, sizeof jf_code, "722223");
   snprintf(connect_msg, sizeof connect_msg, "http://192.168.1.20:8096"); shot(out, "jellyfin-connect");
   if (!jf_logged_in()) return;
@@ -1458,6 +1623,7 @@ int main(int argc, char **argv) {
 
   char p[1200]; snprintf(p, sizeof p, "%s/fonts", pak);
   if (!(dot = dot_init(ren, p, DOT_ACCENT_KINO))) { fprintf(stderr, "fonts in %s: %s\n", p, SDL_GetError()); return 1; }
+  { static const DotTheme kino = DOT_THEME_KINO; dot_set_theme(dot, &kino); }   // midnight blue
   { time_t now = time(NULL); char d[32]; strftime(d, sizeof d, "%Y-%m-%d %H:%M", localtime(&now));
     fprintf(stderr, "Kino %s, %s\n", KINO_VERSION, d); }
   store_open(user);
