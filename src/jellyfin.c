@@ -1,6 +1,7 @@
 // Jellyfin client: see jellyfin.h. HTTP goes through FFmpeg's avio (custom headers, POST bodies), JSON through
 // cJSON. The login (server, user id, access token) and a per-device id live in <user>/jellyfin.txt.
 #include "jellyfin.h"
+#include "kino.h"   // lang_code
 #include "vendor/cJSON.h"
 #include <libavformat/avio.h>
 #include <libavutil/dict.h>
@@ -179,6 +180,7 @@ static int items_from(cJSON *arr, JfItem **out) {
     if (*jstr(o, "CollectionType"))   // libraries carry their kind: "CollectionFolder:movies", ":tvshows", ...
       snprintf(it->type, sizeof it->type, "CollectionFolder:%.7s", jstr(o, "CollectionType"));
     snprintf(it->series, sizeof it->series, "%s", jstr(o, "SeriesName"));
+    snprintf(it->series_id, sizeof it->series_id, "%s", jstr(o, "SeriesId"));
     it->folder = jbool(o, "IsFolder");
     it->year = (int)jnum(o, "ProductionYear");
     it->index = (int)jnum(o, "IndexNumber");
@@ -224,6 +226,41 @@ int jf_views(JfItem **out) {
   memcpy(*out + k, views, nv * sizeof *views);
   free(views);
   return n;
+}
+
+static struct { char type[16]; double start, end; } segs[16];
+static int nsegs;
+void jf_segments_load(const char *item_id) {
+  nsegs = 0;
+  char p[200]; snprintf(p, sizeof p, "/MediaSegments/%s", item_id);
+  int err = 0; cJSON *j = http_json("GET", p, NULL, &err), *o;
+  if (!j) return;   // an older server, or none marked: no skip buttons
+  cJSON_ArrayForEach(o, cJSON_GetObjectItemCaseSensitive(j, "Items")) {
+    if (nsegs == 16) break;
+    double s = jnum(o, "StartTicks") / 1e7, e = jnum(o, "EndTicks") / 1e7;
+    if (e - s < 3) continue;   // too short to be worth a button
+    snprintf(segs[nsegs].type, sizeof segs[nsegs].type, "%s", jstr(o, "Type"));
+    segs[nsegs].start = s; segs[nsegs].end = e; nsegs++;
+  }
+  cJSON_Delete(j);
+}
+int jf_segment(int i, const char **type, double *start, double *end) {
+  if (i < 0 || i >= nsegs) return 0;
+  *type = segs[i].type; *start = segs[i].start; *end = segs[i].end;
+  return 1;
+}
+
+int jf_next_episode(const JfItem *cur, JfItem *next) {
+  if (!*cur->series_id) return 0;
+  char p[400]; JfItem *eps;
+  snprintf(p, sizeof p, "/Shows/%s/Episodes?UserId=%s&StartItemId=%s&Limit=2&Fields=Overview,BackdropImageTags,SeriesName,ProductionYear",
+           cur->series_id, user_id, cur->id);
+  int n = list(p, &eps);
+  if (n < 0) return -1;
+  int found = n >= 2 && strcmp(eps[1].id, cur->id) && !strcmp(eps[0].id, cur->id);
+  if (found) *next = eps[1];
+  free(eps);
+  return found;
 }
 
 int jf_children(const char *parent_id, const char *parent_type, JfItem **out) {
@@ -278,6 +315,18 @@ static const char *DEVICE_PROFILE =
   "{\"Format\":\"subrip\",\"Method\":\"Embed\"},{\"Format\":\"ass\",\"Method\":\"Embed\"},"
   "{\"Format\":\"pgssub\",\"Method\":\"Embed\"},{\"Format\":\"dvdsub\",\"Method\":\"Embed\"}]}";
 
+int jf_audio_want = -1;
+char jf_audio_prefer[16];
+static struct { int index; char code[4]; } auds[16];
+static int nauds, aud_now = -1;
+int jf_audio_count(void) { return nauds; }
+int jf_audio(int i, int *index, const char **code) {
+  if (i < 0 || i >= nauds) return 0;
+  *index = auds[i].index; *code = auds[i].code; return 1;
+}
+int jf_audio_now(void) { return aud_now; }
+int jf_converting(void) { return !strcmp(play_method, "Transcode"); }
+
 int jf_playback(const JfItem *it, char *out, size_t n, int max_bps) {
   char path[300], *body = malloc(strlen(DEVICE_PROFILE) + 300);
   // A converter still running for the last stream (a reconnect asks for a fresh one while the old is open): stop it
@@ -287,10 +336,34 @@ int jf_playback(const JfItem *it, char *out, size_t n, int max_bps) {
     char *b = http("DELETE", path, NULL, NULL); free(b);
   }
   snprintf(path, sizeof path, "/Items/%s/PlaybackInfo?UserId=%s", it->id, user_id);
-  sprintf(body, "{\"DeviceProfile\":%s,\"MaxStreamingBitrate\":%d,\"EnableDirectPlay\":true,"
-          "\"EnableDirectStream\":true,\"EnableTranscoding\":true,\"AllowVideoStreamCopy\":true,"
-          "\"AllowAudioStreamCopy\":false,\"AutoOpenLiveStream\":true}", DEVICE_PROFILE, max_bps);
-  cJSON *j = http_json("POST", path, body, NULL);
+  cJSON *j = NULL;
+  int ask = jf_audio_want;   // -1: the server's pick (first pass), then maybe once more for the preferred language
+  for (int pass = 0; pass < 2; pass++) {
+    char aud[48] = "";
+    if (ask >= 0) snprintf(aud, sizeof aud, "\"AudioStreamIndex\":%d,", ask);
+    sprintf(body, "{\"DeviceProfile\":%s,\"MaxStreamingBitrate\":%d,\"EnableDirectPlay\":true,%s"
+            "\"EnableDirectStream\":true,\"EnableTranscoding\":true,\"AllowVideoStreamCopy\":true,"
+            "\"AllowAudioStreamCopy\":false,\"AutoOpenLiveStream\":true}", DEVICE_PROFILE, max_bps, aud);
+    if (j) cJSON_Delete(j);
+    j = http_json("POST", path, body, NULL);
+    if (!j) break;
+    // its sound tracks, and which one this stream would carry
+    cJSON *src = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(j, "MediaSources"), 0), *a;
+    nauds = 0; aud_now = src ? (int)jnum(src, "DefaultAudioStreamIndex") : -1;
+    cJSON_ArrayForEach(a, src ? cJSON_GetObjectItemCaseSensitive(src, "MediaStreams") : NULL) {
+      if (strcmp(jstr(a, "Type"), "Audio") || nauds == 16) continue;
+      const char *c = lang_code(jstr(a, "Language")); if (!c) c = lang_code(jstr(a, "DisplayTitle"));
+      auds[nauds].index = (int)jnum(a, "Index"); snprintf(auds[nauds].code, sizeof auds[nauds].code, "%s", c ? c : ""); nauds++;
+    }
+    if (ask >= 0) { aud_now = ask; break; }
+    // a converted stream has only the one track: ask again for the preferred language when the server picked another
+    int conv = src && !jbool(src, "SupportsDirectPlay") && *jstr(src, "TranscodingUrl"), want = -1;
+    char pref[16]; snprintf(pref, sizeof pref, "%s", jf_audio_prefer);
+    for (char *t = strtok(pref, ","); t && want < 0; t = strtok(NULL, ","))
+      for (int i = 0; i < nauds && want < 0; i++) if (!strcmp(auds[i].code, t)) want = auds[i].index;
+    if (!conv || want < 0 || want == aud_now) break;
+    ask = want;
+  }
   free(body);
   play_session[0] = 0;
   snprintf(play_method, sizeof play_method, "DirectPlay");
@@ -315,6 +388,17 @@ int jf_playback(const JfItem *it, char *out, size_t n, int max_bps) {
     snprintf(out, n, "%s%s", server, jstr(ms, "TranscodingUrl"));
     snprintf(play_method, sizeof play_method, "Transcode");
     how = 2;
+    // The sound track is set in the stream's address: the server converts what the address says (the
+    // AudioStreamIndex in the request above didn't always reach it), so a chosen track is certain.
+    if (aud_now >= 0) {
+      char *q = strstr(out, "AudioStreamIndex=");
+      if (q) {
+        char *end = q + 17; while (*end >= '0' && *end <= '9') end++;
+        char rest[1200]; snprintf(rest, sizeof rest, "%s", end);
+        snprintf(q, n - (size_t)(q - out), "AudioStreamIndex=%d%s", aud_now, rest);
+      } else { size_t l = strlen(out); snprintf(out + l, n - l, "%sAudioStreamIndex=%d", strchr(out, '?') ? "&" : "?", aud_now); }
+      fprintf(stderr, "jellyfin: converted stream with sound track %d\n", aud_now);
+    }
   } else {
     jf_stream_url(it, out, n);
     if (ms && *jstr(ms, "Id")) {   // the media source may differ from the item (versions)

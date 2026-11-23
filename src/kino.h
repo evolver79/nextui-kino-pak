@@ -56,6 +56,8 @@ typedef struct {
   int quality;                               // QUALITY_*: the most Jellyfin may send; above it, it converts
   int subsize;                               // SUBSIZE_*: subtitle size (Options > Subtitles > Size)
   char prefer1[4], prefer2[4];               // subtitle languages, first and then (lang.c codes); "": the film's own / none
+  char aprefer1[4], aprefer2[4];             // sound languages, the same way ("" first: the film's own)
+  int autonext;                              // play the next episode when one ends (after a countdown)
 } Settings;
 enum { SUBSIZE_S, SUBSIZE_M, SUBSIZE_L, SUBSIZE_XL, NSUBSIZE };
 extern const char *SUBSIZE_NAMES[NSUBSIZE];
@@ -99,6 +101,9 @@ void player_apply_settings(void);
 int player_sub_tracks(void);               // number of subtitle tracks
 const char *player_sub_label(void);        // current track: "ENGLISH", "OFF", ...
 void player_cycle_sub(int dir);            // by hand: Kino stops choosing the subtitle for this film
+const char *player_audio_label(void);      // the sound track: "NORSK · 2/3", "AUTO"
+int player_audio_tracks(void);
+void player_cycle_audio(int dir);          // by hand: Kino stops choosing the sound for this film
 // --- lang.c: language labels ("English", "en-US", "ger", "Norsk") to one code ("eng", "deu", "nor") -----------------
 const char *lang_code(const char *s);      // NULL when not a language it knows
 const char *lang_label(const char *s);     // the language's own name for Options ("NORSK"), or NULL

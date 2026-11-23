@@ -7,6 +7,7 @@
 typedef struct {
   char id[40], name[160], type[32];   // Movie, Series, Season, Episode, Folder, BoxSet, CollectionFolder:movies, ...
   char series[120];                   // episodes: the series name
+  char series_id[40];                 // episodes: the series' id (for the next episode)
   int folder;                         // has children
   int year, index, season;            // production year; episode / season numbers
   double runtime, pos;                // seconds; resume position from the server
@@ -34,10 +35,24 @@ void jf_stream_url(const JfItem *it, char *out, size_t n);
 // play; returns 1 direct, 2 transcoded, 0 failed. max_bps: above it the server converts to a smaller stream.
 // The play session is kept for the playback reports.
 int jf_playback(const JfItem *it, char *out, size_t n, int max_bps);
+// Its sound tracks (from the same answer). A converted stream carries only one: jf_playback asks for jf_audio_want's
+// server index when it's >= 0, else the first track in jf_audio_prefer's languages ("nor,eng"), else the server's pick.
+extern int jf_audio_want;
+extern char jf_audio_prefer[16];
+int jf_audio_count(void);
+int jf_audio(int i, int *index, const char **code);   // code: lang.c code or ""
+int jf_audio_now(void);                                // the server index in this stream
+int jf_converting(void);                               // 1: the server converts this stream (one sound track)
 // Subtitle files the server offers for what jf_playback just set up (next to the video, or text tracks a
 // transcode can't carry): i from 0 until it returns 0.
 int jf_subtitle(int i, const char **url, const char **title, const char **lang);
 void jf_poster_url(const JfItem *it, int w, int h, char *out, size_t n);   // 2:3 cover for the grid
+// The episode after cur in its series (the server's order: seasons, then episode numbers). 1 found, 0 none, -1 failed.
+int jf_next_episode(const JfItem *cur, JfItem *next);
+// Media segments the server marked in an item (Jellyfin 10.10+: Intro, Recap, Outro, Preview, Commercial), fetched
+// with jf_segments_load (on the worker, after jf_playback); jf_segment gives them out from i = 0 until it returns 0.
+void jf_segments_load(const char *item_id);
+int jf_segment(int i, const char **type, double *start, double *end);
 void jf_image_url(const JfItem *it, int w, int h, char *out, size_t n);   // 16:9 picture for the detail card
 // Playback reports: what 0 = started, 1 = progress, 2 = stopped. Runs on its own thread, returns at once.
 void jf_report(int what, const char *item_id, double pos, int paused);

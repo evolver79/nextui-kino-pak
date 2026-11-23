@@ -34,8 +34,9 @@ static struct { double pos, dur, cend, cdur; int wait, idle, pause, il; int64_t 
                 char sid[16], slang[16], snum[16]; } o;
 // Subtitle tracks as Kino sees them, and Kino choosing one by the Prefer languages (mpv's own slang only picks among
 // tracks there at load and compares the tags as they are, so "English" from Jellyfin never matched "eng").
-static struct { int id, forced; char code[4]; } st[32];
-static int nst, sub_by_hand;
+static struct { int id, forced; char code[4]; } st[32], at[16];   // subtitle and audio tracks
+static int nst, nat, sub_by_hand, audio_by_hand, aid_now;
+static char last_aprefer[16] = "?";
 static char last_prefer[16] = "?";
 static void setp(const char *name, const char *v);
 static void pick_sub(void) {
@@ -53,6 +54,20 @@ static void pick_sub(void) {
       if (strcmp(o.sid, id)) { setp("sid", id); fprintf(stderr, "subtitles: track %s (%s%s) by Prefer\n", id, code, st[best].forced ? ", forced" : ""); }
       return;
     }
+  }
+}
+
+static void pick_audio(void) {   // the same for sound: Prefer, then Then; "" leaves it to the film
+  if (audio_by_hand || !nat || !*settings.aprefer1) return;
+  const char *wants[2] = { settings.aprefer1, settings.aprefer2 };
+  for (int w = 0; w < 2; w++) {
+    if (!*wants[w]) continue;
+    for (int i = 0; i < nat; i++)
+      if (!strcmp(at[i].code, wants[w])) {
+        if (at[i].id != aid_now) { char id[16]; snprintf(id, sizeof id, "%d", at[i].id); setp("aid", id);
+          fprintf(stderr, "audio: track %s (%s) by Prefer\n", id, wants[w]); }
+        return;
+      }
   }
 }
 
@@ -86,12 +101,12 @@ static void on_property(mpv_event_property *p) {
   else if (!strcmp(p->name, "current-tracks/sub/id")) snprintf(o.snum, sizeof o.snum, "%s", str);
   else if (!strcmp(p->name, "track-list") && have && p->format == MPV_FORMAT_NODE) {
     mpv_node *n = p->data; int subs = 0;
-    nst = 0;
+    nst = 0; nat = 0; aid_now = 0;
     if (n->format == MPV_FORMAT_NODE_ARRAY)
       for (int k = 0; k < n->u.list->num; k++) {
         mpv_node *t = &n->u.list->values[k];
         if (t->format != MPV_FORMAT_NODE_MAP) continue;
-        const char *type = "", *lang = "", *title = "", *file = ""; int64_t id = 0; int forced = 0;
+        const char *type = "", *lang = "", *title = "", *file = ""; int64_t id = 0; int forced = 0, sel = 0;
         for (int j = 0; j < t->u.list->num; j++) {
           const char *key = t->u.list->keys[j]; mpv_node *v = &t->u.list->values[j];
           if (v->format == MPV_FORMAT_STRING) {
@@ -101,6 +116,13 @@ static void on_property(mpv_event_property *p) {
             else if (!strcmp(key, "external-filename")) file = v->u.string;
           } else if (v->format == MPV_FORMAT_INT64 && !strcmp(key, "id")) id = v->u.int64;
           else if (v->format == MPV_FORMAT_FLAG && !strcmp(key, "forced")) forced = v->u.flag;
+          else if (v->format == MPV_FORMAT_FLAG && !strcmp(key, "selected")) sel = v->u.flag;
+        }
+        if (!strcmp(type, "audio")) {
+          if (sel) aid_now = (int)id;
+          if (nat < 16) { const char *code = lang_code(lang); if (!code) code = lang_code(title);
+            at[nat].id = (int)id; snprintf(at[nat].code, sizeof at[nat].code, "%s", code ? code : ""); nat++; }
+          continue;
         }
         if (strcmp(type, "sub")) continue;
         subs++;
@@ -120,6 +142,7 @@ static void on_property(mpv_event_property *p) {
       }
     o.subs = subs;
     pick_sub();
+    pick_audio();
   } else if (!strcmp(p->name, "video-frame-info/interlaced")) {
     o.il = f;   // mpv 0.35 has no deinterlace "auto": on when the picture says it's interlaced
     if (f && active && settings.deint == DEINT_AUTO && !deint_checked) { deint_checked = 1; setp("deinterlace", "yes"); }
@@ -354,6 +377,7 @@ void player_open(const char *path, double start) {
   o_reset();
   active = 1; stopping = 0; frames = 0; deint_checked = 0; crop_reset();
   nst = 0; sub_by_hand = 0;   // a new film: Kino chooses its subtitle again
+  nat = 0; audio_by_hand = 0; aid_now = 0;
   last_pos = start > 0 ? start : 0; last_dur = 0;
   accent = 0xff6a2b;
 }
@@ -523,6 +547,9 @@ void player_apply_settings(void) {
   char slang[16]; snprintf(slang, sizeof slang, "%s%s%s", settings.prefer1, *settings.prefer2 ? "," : "", settings.prefer2);
   setp("slang", slang);   // mpv's own first pick at load; Kino then chooses (pick_sub) by the codes
   if (strcmp(slang, last_prefer)) { snprintf(last_prefer, sizeof last_prefer, "%s", slang); sub_by_hand = 0; pick_sub(); }   // changed: choose again
+  char alang[16]; snprintf(alang, sizeof alang, "%s%s%s", settings.aprefer1, *settings.aprefer2 ? "," : "", settings.aprefer2);
+  setp("alang", alang);
+  if (strcmp(alang, last_aprefer)) { snprintf(last_aprefer, sizeof last_aprefer, "%s", alang); audio_by_hand = 0; pick_audio(); }
   setp("vd", settings.hwdec ? "h264_cedar,hevc_cedar" : "");   // next file
 }
 
@@ -541,6 +568,24 @@ const char *player_sub_label(void) {   // the track's language in its own name (
     for (char *p = sub_label; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
   } else snprintf(sub_label, sizeof sub_label, "TRACK %s", id ? id : "?");
   return sub_label;
+}
+
+// The sound track: its language in its own name, else "TRACK n"; ◄ ► in Options switches (and keeps that choice).
+const char *player_audio_label(void) {
+  static char lab[32];
+  if (!active || !nat) return "AUTO";
+  for (int i = 0; i < nat; i++) if (at[i].id == aid_now) {
+    const char *name = lang_label(at[i].code);
+    if (name) snprintf(lab, sizeof lab, "%s", name); else snprintf(lab, sizeof lab, "TRACK %d", at[i].id);
+    if (nat > 1) { size_t l = strlen(lab); snprintf(lab + l, sizeof lab - l, " · %d/%d", i + 1, nat); }
+    return lab;
+  }
+  return "AUTO";
+}
+int player_audio_tracks(void) { return active ? nat : 0; }
+void player_cycle_audio(int dir) {
+  audio_by_hand = 1;
+  cmd("cycle", "audio", dir < 0 ? "down" : "up");
 }
 
 void player_cycle_sub(int dir) {

@@ -26,12 +26,13 @@ enum { BTN_A = SDL_CONTROLLER_BUTTON_B, BTN_B = SDL_CONTROLLER_BUTTON_A, BTN_X =
        BTN_UP = SDL_CONTROLLER_BUTTON_DPAD_UP, BTN_DOWN = SDL_CONTROLLER_BUTTON_DPAD_DOWN,
        BTN_LEFT = SDL_CONTROLLER_BUTTON_DPAD_LEFT, BTN_RIGHT = SDL_CONTROLLER_BUTTON_DPAD_RIGHT,
        BTN_L2 = SDL_CONTROLLER_BUTTON_MAX + 1, BTN_R2 = SDL_CONTROLLER_BUTTON_MAX + 2 };   // triggers are axes in SDL
-enum { SCR_BROWSE, SCR_PLAY, SCR_OPTIONS, SCR_CONNECT, SCR_HELP };
-enum { O_ASPECT, O_BRIGHT, O_CONTRAST, O_DEINT, O_FILTER, O_SUBS, O_TRACK, O_PREFER, O_PREFER2, O_LEDS, O_HWDEC, O_QUALITY, NOPT };   // Ground light: settings.txt only
+enum { SCR_BROWSE, SCR_PLAY, SCR_OPTIONS, SCR_CONNECT, SCR_HELP, SCR_NEXT };
+enum { O_ASPECT, O_BRIGHT, O_CONTRAST, O_DEINT, O_FILTER, O_ATRACK, O_APREFER, O_APREFER2, O_SUBS, O_TRACK, O_PREFER, O_PREFER2,
+       O_LEDS, O_HWDEC, O_QUALITY, O_AUTONEXT, NOPT };   // Ground light: settings.txt only
 // Options in tabs (L1/R1): each tab's options in order, the first one where a tab opens.
-#define NTABS 3
-static const char *TAB_NAMES[NTABS] = { "Picture", "Subtitles", "Brick" };
-static const int TAB_FIRST[NTABS + 1] = { O_ASPECT, O_SUBS, O_LEDS, NOPT };
+#define NTABS 4
+static const char *TAB_NAMES[NTABS] = { "Picture", "Audio", "Subtitles", "Brick" };
+static const int TAB_FIRST[NTABS + 1] = { O_ASPECT, O_ATRACK, O_SUBS, O_LEDS, NOPT };
 static int opt_tab(int o) { int t = 0; while (t + 1 < NTABS && o >= TAB_FIRST[t + 1]) t++; return t; }
 #define ROWS 5
 #define MAXDEPTH 32
@@ -112,7 +113,7 @@ static JfItem *jall;   // the whole level as listed; jitems is the view of it (t
 static int nall;
 static Uint32 last_report;
 // Background jobs (network): one at a time.
-enum { J_NONE, J_CONNECT, J_POLL, J_LIST, J_PLAY };
+enum { J_NONE, J_CONNECT, J_POLL, J_LIST, J_PLAY, J_NEXT };
 static SDL_Thread *job_th;
 static SDL_atomic_t job_done;
 static int job_kind, job_result, job_n;
@@ -357,6 +358,15 @@ static void list_dir(void) {
 
 // --- Jellyfin ---------------------------------------------------------------------------------------------------
 static void show_toast(const char *s);
+// Up next: when an episode ends, the next one (the next file in an SD card series folder, or the server's next
+// episode of the series) plays after a countdown; A plays it now, B stays in the browser. Options > Brick turns it off.
+#define NEXT_MS 10000
+static int next_kind;              // 0 none, 1 the SD card's next file (items[next_local]), 2 Jellyfin (next_jf)
+static int next_local;
+static JfItem next_jf;
+static Uint32 next_at;             // when it starts by itself
+static char next_pic[1100];        // its picture: the file's path, or the server's image URL
+
 static int job_run(void *u) {
   (void)u;
   switch (job_kind) {
@@ -366,7 +376,10 @@ static int job_run(void *u) {
       break;
     case J_POLL: job_result = jf_qc_poll(); break;
     case J_LIST: job_n = job_id[0] ? jf_children(job_id, job_type, &job_items) : jf_views(&job_items); break;
-    case J_PLAY: job_result = jf_playback(&playing_jf, jf_play_url, sizeof jf_play_url, QUALITY_BPS[settings.quality]); break;
+    case J_PLAY: job_result = jf_playback(&playing_jf, jf_play_url, sizeof jf_play_url, QUALITY_BPS[settings.quality]);
+      if (job_result) jf_segments_load(playing_jf.id);   // intro, recap, credits: the skip button
+      break;
+    case J_NEXT: job_result = jf_next_episode(&playing_jf, &next_jf); break;
   }
   SDL_AtomicSet(&job_done, 1);
   return 0;
@@ -491,11 +504,19 @@ static void job_finished(void) {
     player_open(playing, start);
     wifi_power_save(0);
     if (!lost_tries) jf_report(0, playing_jf.id, start, 0);
-    screen = SCR_PLAY; on_bar = 0;
+    if (screen == SCR_OPTIONS) player_pause(1);   // another sound track, chosen in Options: back to it paused
+    else screen = SCR_PLAY;
+    on_bar = 0;
     overlay_until = SDL_GetTicks() + DOT_AUTOHIDE_MS;
     last_save = last_report = SDL_GetTicks();
     toast_until = 0;
     if (!lost_tries && wifi_state() == WIFI_WEAK) { show_toast("Weak Wi-Fi: this film may stop to buffer"); net_log("weak", "toast: weak Wi-Fi"); }
+  } else if (job_kind == J_NEXT) {
+    if (job_result == 1 && screen == SCR_BROWSE) {
+      next_kind = 2; next_at = SDL_GetTicks() + NEXT_MS; screen = SCR_NEXT;
+      jf_image_url(&next_jf, THUMB_W, THUMB_H, next_pic, sizeof next_pic);
+      media_want(next_pic, NULL, 0);
+    }
   } else if (job_kind == J_LIST) {
     jf_loading = 0;
     if (job_n < 0) {
@@ -560,6 +581,8 @@ static void show_toast(const char *s) { snprintf(toast, sizeof toast, "%s", s); 
 static void play_jf(const JfItem *it, int from_start) {   // first ask the server how, on the worker
   if (job_th) return;
   playing_jf = *it; jf_playing = 1; jf_play_from_start = from_start;
+  jf_audio_want = -1;   // a new film: its sound by Prefer (or the server's pick), not the last film's choice
+  snprintf(jf_audio_prefer, sizeof jf_audio_prefer, "%s%s%s", settings.aprefer1, *settings.aprefer2 ? "," : "", settings.aprefer2);
   net_stalls = net_poor = net_was_buffering = 0; net_drops0 = wifi_drops(); net_t0 = SDL_GetTicks();
   net_log(NULL, "play %s from %.0f s, quality %d", playing_jf.id, from_start ? 0 : playing_jf.pos, settings.quality);
   if (!strcmp(playing_jf.type, "Episode") && playing_jf.index)
@@ -617,6 +640,7 @@ static void stop(int ended) {
     jf_playing = 0;
     screen = SCR_BROWSE;
     want_media();
+    if (ended && settings.autonext && !strcmp(playing_jf.type, "Episode") && *playing_jf.series_id) start_job(J_NEXT);
     return;
   }
   if (ended) { store_set_resume(playing, -1, 0); store_save(); }
@@ -627,8 +651,21 @@ static void stop(int ended) {
   }
   screen = SCR_BROWSE;
   select_path(playing);
+  int was = cursor;
   if (ended && cursor + 1 < nitems && !items[cursor + 1].dir) set_cursor(cursor + 1);   // A plays the next one
   want_media();
+  const char *base = strrchr(playing, '/'); base = base ? base + 1 : playing;
+  if (ended && settings.autonext && cursor == was + 1 && looks_episode(base) && looks_episode(items[cursor].name)) {
+    next_kind = 1; next_local = cursor; next_at = SDL_GetTicks() + NEXT_MS; screen = SCR_NEXT;
+    item_path(cursor, next_pic, sizeof next_pic);
+  }
+}
+
+static void start_next(void) {   // Up next: play it (A, or the countdown ran out)
+  int kind = next_kind; next_kind = 0;
+  if (kind == 1 && next_local < nitems) { screen = SCR_BROWSE; play(next_local, 0); }
+  else if (kind == 2) { screen = SCR_BROWSE; media_want(NULL, NULL, 0); media_want_posters(NULL, 0); play_jf(&next_jf, 0); }
+  else screen = SCR_BROWSE;
 }
 
 // --- drawing --------------------------------------------------------------------------------------------------
@@ -1135,10 +1172,35 @@ static const char *DEINTS[NDEINT] = { "AUTO", "ON", "OFF" };
 
 // Tabs at the top right, between L1 and R1 key caps; the active one lit.
 static void draw_tabs(const char *const *names, int n, int active) {
-  int tx = DOT_W - DOT_MARGIN;
-  tx -= dot_text_w(dot, DOT_KEY_WIDE, "R1") + 40; dot_key(dot, tx, 25, "R1", 0, 0); tx -= 12;
+  int tx = DOT_W - DOT_MARGIN;   // no L1/R1 caps here: the dock says "L1 R1", and four tabs need the room
   for (int i = n - 1; i >= 0; i--) { tx -= dot_text_w(dot, DOT_CHIP_T, names[i]) + 40; dot_chip(dot, tx, 28, names[i], i == active ? DOT_ON : 0); tx -= 8; }
-  tx -= 4 + dot_text_w(dot, DOT_KEY_WIDE, "L1") + 40; dot_key(dot, tx, 25, "L1", 0, 0);
+}
+
+// The sound track. A stream the server converts carries one track: Kino lists the film's tracks from the server and
+// switches by asking for the stream again with the other one, from where it is (a second or two).
+static int jf_audio_mode(void) { return jf_playing && jf_converting() && jf_audio_count() > 0; }
+static const char *audio_label(void) {
+  if (!jf_audio_mode()) return player_audio_label();
+  static char lab[40]; int n = jf_audio_count(), idx; const char *code;
+  for (int i = 0; jf_audio(i, &idx, &code); i++) if (idx == jf_audio_now()) {
+    const char *name = lang_label(code);
+    if (name) snprintf(lab, sizeof lab, "%s", name); else snprintf(lab, sizeof lab, "TRACK %d", i + 1);
+    if (n > 1) { size_t l = strlen(lab); snprintf(lab + l, sizeof lab - l, " · %d/%d", i + 1, n); }
+    return lab;
+  }
+  return "AUTO";
+}
+static int audio_count(void) { return jf_audio_mode() ? jf_audio_count() : player_audio_tracks(); }
+static void audio_switch(int dir) {
+  if (!jf_audio_mode()) { if (player_active()) player_cycle_audio(dir); return; }
+  int n = jf_audio_count(), cur = 0, idx; const char *code;
+  if (n < 2 || job_th) return;
+  for (int i = 0; jf_audio(i, &idx, &code); i++) if (idx == jf_audio_now()) cur = i;
+  jf_audio(((cur + dir) % n + n) % n, &idx, &code);
+  jf_audio_want = idx;   // kept for this film, also through reconnects
+  playing_jf.pos = player_pos(); jf_play_from_start = 0;
+  show_toast("Changing the sound…");
+  start_job(J_PLAY);
 }
 
 static void draw_options(void) {
@@ -1162,7 +1224,13 @@ static void draw_options(void) {
     char fname[32]; snprintf(fname, sizeof fname, "%s", FILTER_NAMES[settings.filter]);
     for (char *q = fname; *q; q++) if (*q >= 'a' && *q <= 'z') *q -= 32;
     dot_opt(dot, x, y + 3 * P, cw, "Filter", fname, f[O_FILTER]);
-  } else if (tab == 1) {
+  } else if (tab == 1) {   // sound: the track now, and the languages Kino picks it by (as for subtitles)
+    y = dot_panel(dot, 40, 108, 944, dot_panel_h(3 * P - 8) - 46, NULL);
+    const char *a1 = lang_label(settings.aprefer1), *a2 = lang_label(settings.aprefer2);
+    dot_opt(dot, x, y, cw, "Track", audio_label(), f[O_ATRACK] | (audio_count() > 1 ? 0 : DOT_OFF));
+    dot_opt(dot, x, y + P, cw, "Prefer", a1 ? a1 : "FILM'S OWN", f[O_APREFER]);
+    dot_opt(dot, x, y + 2 * P, cw, "Then", a2 ? a2 : "NONE", f[O_APREFER2] | (*settings.aprefer1 ? 0 : DOT_OFF));
+  } else if (tab == 2) {
     y = dot_panel(dot, 40, 108, 944, dot_panel_h(4 * P - 8) - 46, NULL);
     // Show and size in one row: OFF, S, M, L, XL (A: on/off, keeping the size; SELECT while playing does the same)
     char show[24]; snprintf(show, sizeof show, "%s", settings.subs ? SUBSIZE_NAMES[settings.subsize] : "OFF");
@@ -1173,10 +1241,11 @@ static void draw_options(void) {
     dot_opt(dot, x, y + 2 * P, cw, "Prefer", l1 ? l1 : "FILM'S OWN", f[O_PREFER]);
     dot_opt(dot, x, y + 3 * P, cw, "Then", l2 ? l2 : "NONE", f[O_PREFER2] | (*settings.prefer1 ? 0 : DOT_OFF));
   } else {
-    y = dot_panel(dot, 40, 108, 944, dot_panel_h(3 * P - 8) - 46, NULL);
+    y = dot_panel(dot, 40, 108, 944, dot_panel_h(4 * P - 8) - 46, NULL);
     dot_opt_toggle(dot, x, y, cw, "Lights follow video", settings.leds, f[O_LEDS]);
     dot_opt_toggle(dot, x, y + P, cw, "Hardware decoding", settings.hwdec, f[O_HWDEC]);
     dot_opt(dot, x, y + 2 * P, cw, "Jellyfin quality", QUALITY_NAMES[settings.quality], f[O_QUALITY]);
+    dot_opt_toggle(dot, x, y + 3 * P, cw, "Play next episode", settings.autonext, f[O_AUTONEXT]);
   }
   DotHint h[] = { { "<>", "Change" }, { "L1 R1", "Section" }, { "X", "Buttons" }, { "B", "Close" } };   // A changes too
   dot_dock(dot, h, 4);
@@ -1213,6 +1282,37 @@ static const DotHint HELP_PLAY[] = { { "A", "Pause" }, { "<>", "10 seconds back,
   { "L1 R1", "Picture filter" }, { "L2 R2", "Aspect" }, { "SELECT", "Subtitles on, off" }, { "B", "Stop, save the place" } };
 
 static int help_tab;   // 0 browsing, 1 playing (L1/R1)
+static void draw_next(void) {   // Up next: the episode's picture and names, and a countdown in dots
+  dot_set_ground(dot, settings.ground ? DOT_GROUND_TOPCENTRE : DOT_GROUND_TOPLEFT);
+  dot_ground(dot);
+  dot_title(dot, "UP NEXT");
+  char series[256] = "", line[200] = "", name[256] = "";
+  if (next_kind == 2) {
+    snprintf(series, sizeof series, "%s", next_jf.series);
+    if (next_jf.index) snprintf(line, sizeof line, "Season %d · Episode %d", next_jf.season, next_jf.index);
+    snprintf(name, sizeof name, "%s", next_jf.name);
+  } else if (next_kind == 1 && next_local < nitems) {
+    const char *d = strrchr(cwd, '/'); snprintf(series, sizeof series, "%.255s", d ? d + 1 : cwd);
+    title_of(items[next_local].name, name, sizeof name);
+    MediaInfo mi; if (media_info(next_pic, &mi) && mi.duration > 0) { char t[24]; fmt_time(mi.duration, t, sizeof t); snprintf(line, sizeof line, "Length %s", t); }
+  }
+  dot_card(dot, 40, 96, 944, 528);
+  draw_thumb_area(70, 126, next_pic, 0);
+  int tx = 70 + CARD_PIC_W + 32, tw = 984 - 30 - tx;
+  dot_text(dot, DOT_LABEL_T, series, tx, 132, DOT_LABEL, DOT_LEFT, tw);
+  dot_text(dot, DOT_TITLE, name, tx, 172, DOT_TEXT, DOT_LEFT, tw);
+  if (*line) dot_text(dot, DOT_BODY_S, line, tx, 226, DOT_LABEL, DOT_LEFT, tw);
+  Uint32 now = SDL_GetTicks(); int left = next_at > now ? (int)((next_at - now + 999) / 1000) : 0;
+  dot_adot(dot, 70, 384, dot_accent(dot));
+  dot_text(dot, DOT_LABEL_T, "Playing in", 102, 378, DOT_TEXT, DOT_LEFT, 0);
+  char sec[16]; snprintf(sec, sizeof sec, "0:%02d", left);
+  dot_time(dot, DOT_DISPLAY_XL, sec, 68, 420, DOT_TEXT, DOT_LEFT);
+  float done = next_at > now ? 1 - (float)(next_at - now) / NEXT_MS : 1;
+  dot_progress(dot, 70, 574, 884, done, 0);
+  DotHint h[] = { { "A", "Play now" }, { "B", "Not now" } };
+  dot_dock(dot, h, 2);
+}
+
 static void draw_help_panel(const DotHint *h, int n) {
   enum { PITCH = 68 };   // a key cap is 62 high
   int y = dot_panel(dot, 40, 108, 944, dot_panel_h(n * PITCH - 6) - 46, NULL);
@@ -1234,6 +1334,32 @@ static void draw_help(void) {
   dot_dock(dot, h, 2);
 }
 
+// Skip: while Jellyfin's marked intro, recap, preview or end credits play, a button at the bottom right; X jumps past
+// it. The credits of an episode go to Up next instead (when that's on).
+static int skip_now(const char **label, double *to, int *credits) {
+  if (!jf_playing || !player_active() || on_bar) return 0;
+  double pos = player_pos(), s, e; const char *type;
+  for (int i = 0; jf_segment(i, &type, &s, &e); i++) {
+    if (pos < s || pos >= e - 2) continue;
+    *to = e; *credits = !strcmp(type, "Outro");
+    if (!strcmp(type, "Intro")) *label = "Skip intro";
+    else if (!strcmp(type, "Recap")) *label = "Skip recap";
+    else if (!strcmp(type, "Preview")) *label = "Skip preview";
+    else if (*credits) *label = settings.autonext && !strcmp(playing_jf.type, "Episode") ? "Next episode" : "Skip credits";
+    else continue;
+    return 1;
+  }
+  return 0;
+}
+static void draw_skip(int controls) {
+  const char *label; double to; int credits;
+  if (!skip_now(&label, &to, &credits)) return;
+  int tw = dot_text_w(dot, DOT_UI, label), w = 16 + DOT_KEY + 14 + tw + 26, h = 80, x = 984 - w, y = controls ? 404 : 652;
+  dot_rect(dot, x, y, w, h, DOT_R_CARD, DOT_GLASS, 225);
+  dot_key(dot, x + 16, y + (h - DOT_KEY) / 2, "X", 1, 0);
+  dot_text(dot, DOT_UI, label, x + 16 + DOT_KEY + 14, y + (h - dot_line_h(dot, DOT_UI)) / 2, DOT_TEXT, DOT_LEFT, 0);
+}
+
 static void draw(void) {
   dot_frame(dot);
   dot_set_accent(dot, DOT_ACCENT_KINO);
@@ -1243,11 +1369,13 @@ static void draw(void) {
   else if (screen == SCR_CONNECT) draw_connect();
   else if (screen == SCR_OPTIONS) draw_options();
   else if (screen == SCR_HELP) draw_help();
+  else if (screen == SCR_NEXT) draw_next();
   else {
     draw_video();
     int controls = player_paused() || on_bar || now < overlay_until;
     player_sub_above(controls ? 64 : 100);   // the panel covers the bottom third: subtitles go above it
     if (controls) draw_overlay();
+    draw_skip(controls);
     if (now < info_until) dot_pill(dot, W / 2, 36, info, 0, 1, DOT_CENTER);
     else draw_net_status();
   }
@@ -1289,12 +1417,16 @@ static void change_option(int dir) {
       else settings.subsize = clampi(settings.subsize + dir, 0, NSUBSIZE - 1);
       break;
     case O_TRACK: if (player_active()) player_cycle_sub(dir); return;
-    case O_PREFER: case O_PREFER2: {   // every language Kino knows, and "" (the film's own / none) before the first
-      char *cur = opt_sel == O_PREFER ? settings.prefer1 : settings.prefer2, *other = opt_sel == O_PREFER ? settings.prefer2 : settings.prefer1;
+    case O_ATRACK: audio_switch(dir ? dir : 1); return;
+    case O_AUTONEXT: settings.autonext = !settings.autonext; break;
+    case O_PREFER: case O_PREFER2: case O_APREFER: case O_APREFER2: {   // every language Kino knows, and "" (the film's own / none) first
+      int sub = opt_sel == O_PREFER || opt_sel == O_PREFER2, first = opt_sel == O_PREFER || opt_sel == O_APREFER;
+      char *p1 = sub ? settings.prefer1 : settings.aprefer1, *p2 = sub ? settings.prefer2 : settings.aprefer2;
+      char *cur = first ? p1 : p2, *other = first ? p2 : p1;
       int n = lang_count(), i = lang_index(cur), d = dir ? dir : 1;
       do { i += d; if (i >= n) i = -1; if (i < -1) i = n - 1; } while (i >= 0 && !strcmp(lang_code_at(i), other));
       snprintf(cur, 4, "%s", i < 0 ? "" : lang_code_at(i));
-      if (!*settings.prefer1 && *settings.prefer2) { snprintf(settings.prefer1, 4, "%s", settings.prefer2); settings.prefer2[0] = 0; }
+      if (!*p1 && *p2) { snprintf(p1, 4, "%s", p2); p2[0] = 0; }
       break;
     }
     case O_LEDS: settings.leds = !settings.leds; break;
@@ -1329,6 +1461,11 @@ static void on_button(int b) {
     else if (b == BTN_A && !jf_code[0] && !job_th) jf_enter();
     return;
   }
+  if (screen == SCR_NEXT) {
+    if (b == BTN_A) start_next();
+    else if (b == BTN_B) { next_kind = 0; screen = SCR_BROWSE; }
+    return;
+  }
   if (screen == SCR_HELP) {
     if (b == BTN_L1 || b == BTN_R1 || b == BTN_LEFT || b == BTN_RIGHT) { help_tab = !help_tab; return; }
     if (b == BTN_A || b == BTN_B || b == BTN_X || b == BTN_Y) {
@@ -1349,6 +1486,14 @@ static void on_button(int b) {
       case BTN_RIGHT: change_option(1); break;
       case BTN_A: change_option(opt_sel == O_SUBS ? 0 : 1); break;
       case BTN_B: case BTN_Y: close_options(); break;
+    }
+    return;
+  }
+  if (screen == SCR_PLAY && b == BTN_X) {   // skip the intro, recap or credits Jellyfin marked
+    const char *label; double to; int credits;
+    if (skip_now(&label, &to, &credits)) {
+      if (credits && !strcmp(playing_jf.type, "Episode") && settings.autonext) stop(1);   // to Up next
+      else { player_seek_to(to); overlay_until = 0; }
     }
     return;
   }
@@ -1502,6 +1647,10 @@ static void shots(const char *out) {
   settings.ground = 1; shot(out, "browse-series-ground-centre"); settings.ground = 0;
   set_cursor(3); wait_media(); shot(out, "browse-new");
   if (nitems > ROWS) { set_cursor(nitems - 2); wait_media(); shot(out, "browse-scrolled"); set_cursor(3); }
+  set_cursor(3); wait_media();   // Up next: episode 3 ended, episode 4 starts in 7 s
+  next_kind = 1; next_local = 3; item_path(3, next_pic, sizeof next_pic); next_at = SDL_GetTicks() + 6500; screen = SCR_NEXT;
+  shot(out, "next-episode");
+  next_kind = 0; screen = SCR_BROWSE;
   play(2, 0); pump(1500); overlay_until = 0; pump(4500);   // the crop holds for 4 s before it's taken
   shot(out, "playing-subtitles");   // playing, no controls: the .srt next to it (build/shots.sh) in Noto Sans
   { int was = settings.aspect;   // Stretch and 4:3 change the picture's shape, never the subtitles'
@@ -1526,6 +1675,8 @@ static void shots(const char *out) {
   toast_until = 0; open_options(); opt_sel = O_ASPECT; shot(out, "options");
   opt_sel = O_SUBS; settings.subsize = SUBSIZE_L; shot(out, "options-subsize"); settings.subsize = SUBSIZE_M;
   opt_sel = O_HWDEC; shot(out, "options-brick");
+  opt_sel = O_APREFER; snprintf(settings.aprefer1, 4, "nor"); snprintf(settings.aprefer2, 4, "eng"); shot(out, "options-audio");
+  settings.aprefer1[0] = settings.aprefer2[0] = 0;
   on_button(BTN_X); shot(out, "help-from-options"); on_button(BTN_B);
   help_back = SCR_BROWSE; help_tab = 0; screen = SCR_HELP; shot(out, "help-first-start");
   help_tab = 1; shot(out, "help-playing"); help_tab = 0; screen = SCR_OPTIONS;
@@ -1725,6 +1876,7 @@ int main(int argc, char **argv) {
       if (lost_tries && !retry_at && player_active() && player_buffering() < 0 && player_pos() > playing_jf.pos + 10)
         { lost_tries = 0; net_log(NULL, "reconnected, playing for 10 s at %.0f s", player_pos()); }   // a later drop: five new tries
       if (screen == SCR_CONNECT && jf_code[0] && !job_th && SDL_GetTicks() >= next_poll) start_job(J_POLL);
+      if (screen == SCR_NEXT && SDL_GetTicks() >= next_at && !job_th) start_next();
       int fresh = player_active() && player_frame();
       if (player_active() && screen != SCR_BROWSE) leds_follow(player_accent()); else leds_restore();
       if (screen == SCR_PLAY && !fresh && !player_paused() && !on_bar && SDL_GetTicks() >= overlay_until + 100 &&
