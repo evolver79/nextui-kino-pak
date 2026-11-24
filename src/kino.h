@@ -3,7 +3,7 @@
 #include <SDL2/SDL.h>
 #include <stdint.h>
 
-#define KINO_VERSION "1.0.0"
+#define KINO_VERSION "1.1.0"
 #include "dot_tokens.h"
 // The device's screen (Brick 1024x768, Smart Pro 1280x720), from dot_screen_detect() at the start of main.
 #define W DOT_W
