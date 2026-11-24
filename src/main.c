@@ -500,6 +500,7 @@ static void job_finished(void) {
     if (lost_tries && !job_result) {   // reconnecting and the server didn't answer: no point opening the film and waiting
       player_close(); stream_lost("server didn't answer"); return;
     }
+    { char w[120]; wifi_describe(w, sizeof w); net_log(NULL, "Wi-Fi: %s", w); }
     net_log(NULL, "open at %.0f s, %s", start, job_result == 2 ? "transcoded" : job_result == 1 ? "direct" : "server didn't answer");
     player_open(playing, start);
     wifi_power_save(0);
@@ -1137,7 +1138,8 @@ static void stream_lost(const char *how) {
 static void net_watch(void) {
   int b = player_buffering(), buffering = b >= 0 && b <= 100;   // 101 is opening or seeking: not a stall
   if (buffering && !net_was_buffering && player_pos() > playing_jf.pos + 5) {
-    net_stalls++; net_log(NULL, "stall %d at %.0f s (buffer %d%%)", net_stalls, player_pos(), b);
+    char w[120]; wifi_describe(w, sizeof w);
+    net_stalls++; net_log(NULL, "stall %d at %.0f s (buffer %d%%), %s", net_stalls, player_pos(), b, w);
   } else if (!buffering && net_was_buffering) net_log(NULL, "playing again at %.0f s", player_pos());
   net_was_buffering = buffering;
   static int drops_seen; int d = wifi_drops() - net_drops0;
@@ -1845,9 +1847,11 @@ int main(int argc, char **argv) {
       if (jf_playing && player_active() && SDL_GetTicks() - last_report > 10000) {
         jf_report(1, playing_jf.id, player_pos(), player_paused()); last_report = SDL_GetTicks();
         static int reports;   // in the log: every 10 s in tests, every minute otherwise (for logs users send in)
-        if (net_test || ++reports % 6 == 0)
+        if (net_test || ++reports % 6 == 0) {
+          char w[120]; wifi_describe(w, sizeof w); net_log(NULL, "Wi-Fi: %s", w);
           net_log(NULL, "at %.0f s%s, %.0f s ahead, %ld kB/s in", player_pos(), player_buffering() >= 0 ? ", waiting" : "",
                   player_cache_secs(), player_net_speed() / 1000);
+        }
       }
       if (job_th && SDL_AtomicGet(&job_done)) job_finished();
       if (retry_at && SDL_GetTicks() >= retry_at && !job_th && jf_playing) {   // ask the server again: a fresh URL

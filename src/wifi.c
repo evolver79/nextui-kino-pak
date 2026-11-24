@@ -20,6 +20,14 @@
 
 static SDL_atomic_t state, dbm, drops;   // drops: times the link went from connected to gone
 static int saved_ps = -1;   // power save before Kino turned it off: 1 on, 0 off, -1 not touched
+// For the log (wifi_describe): the mesh node / router we're on, channel, link rate, and the radio's resends so far.
+// The resends come from "iw station dump", asked only while a Jellyfin film plays (film: power save is off for it).
+static SDL_mutex *desc_lock;
+static SDL_atomic_t film;
+static char d_ap[20], d_rate[16];
+static int d_freq;
+static long d_retries = -1, d_fails = -1;   // -1: not known (no film playing, or not asked yet)
+static long last_retries = -1, last_fails = -1;   // at the last wifi_describe, or the film's first reading
 
 static int has_ip(void) {   // wlan0 has an IPv4 address (DHCP done)
   int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
@@ -35,13 +43,32 @@ static int has_ip(void) {   // wlan0 has an IPv4 address (DHCP done)
 static void read_once(void) {
   FILE *f = popen("/usr/sbin/iw dev wlan0 link 2>/dev/null", "r");
   if (!f) return;
-  char line[160]; int connected = 0, sig = 0;
+  char line[160], ap[20] = "", rate[16] = ""; int connected = 0, sig = 0, freq = 0;
   while (fgets(line, sizeof line, f)) {
-    if (!strncmp(line, "Connected to", 12)) connected = 1;
+    if (!strncmp(line, "Connected to", 12)) { connected = 1; sscanf(line + 12, " %19s", ap); }
     char *p = strstr(line, "signal:");
     if (p) sig = atoi(p + 7);
+    if ((p = strstr(line, "freq:"))) freq = atoi(p + 5);
+    if ((p = strstr(line, "tx bitrate:"))) sscanf(p + 11, " %15s", rate);
   }
   pclose(f);
+  long retries = -1, fails = -1;
+  if (connected && SDL_AtomicGet(&film) && (f = popen("/usr/sbin/iw dev wlan0 station dump 2>/dev/null", "r"))) {
+    while (fgets(line, sizeof line, f)) {
+      char *p;
+      if ((p = strstr(line, "tx retries:"))) retries = atol(p + 11);
+      if ((p = strstr(line, "tx failed:"))) fails = atol(p + 10);
+    }
+    pclose(f);
+  }
+  if (desc_lock) {
+    SDL_LockMutex(desc_lock);
+    snprintf(d_ap, sizeof d_ap, "%s", ap); snprintf(d_rate, sizeof d_rate, "%s", rate);
+    d_freq = freq; d_retries = retries; d_fails = fails;
+    if (retries < 0) last_retries = last_fails = -1;   // no film: the next one counts from its own start
+    else if (last_retries < 0) { last_retries = retries; last_fails = fails; }
+    SDL_UnlockMutex(desc_lock);
+  }
   static int linked;   // drops count the link to the router only, as before the address check
   if (linked && !connected) SDL_AtomicIncRef(&drops);
   linked = connected;
@@ -77,6 +104,7 @@ static int run(void *ud) {
 }
 
 void wifi_start(void) {
+  desc_lock = SDL_CreateMutex();
   SDL_Thread *t = SDL_CreateThread(run, "wifi", NULL);
   if (t) SDL_DetachThread(t);
 }
@@ -86,6 +114,7 @@ int wifi_dbm(void) { return SDL_AtomicGet(&dbm); }
 int wifi_drops(void) { return SDL_AtomicGet(&drops); }
 
 void wifi_power_save(int on) {
+  SDL_AtomicSet(&film, !on);
   if (!on) {
     if (saved_ps >= 0) return;
     FILE *f = popen("/usr/sbin/iw dev wlan0 get power_save 2>/dev/null", "r");
@@ -97,4 +126,19 @@ void wifi_power_save(int on) {
     if (saved_ps) system("/usr/sbin/iw dev wlan0 set power_save on 2>/dev/null");
     saved_ps = -1;
   }
+}
+
+// "node cd:e5:f6, 2452 MHz, -50 dBm, link 120 Mbit/s, 230 resends, 0 lost": the router's last three bytes (a mesh
+// has one per node), and the radio's resends and lost packets since the last call (many: a busy or distant channel).
+void wifi_describe(char *out, size_t n) {
+  if (!desc_lock) { snprintf(out, n, "Wi-Fi not read"); return; }
+  SDL_LockMutex(desc_lock);
+  const char *ap = strlen(d_ap) > 8 ? d_ap + strlen(d_ap) - 8 : d_ap;
+  int counted = last_retries >= 0 && d_retries >= last_retries && last_fails >= 0 && d_fails >= last_fails;
+  if (!*d_ap) snprintf(out, n, "no Wi-Fi link");
+  else if (!counted) snprintf(out, n, "node %s, %d MHz, %d dBm, link %s Mbit/s", ap, d_freq, wifi_dbm(), d_rate);   // the first of a film
+  else snprintf(out, n, "node %s, %d MHz, %d dBm, link %s Mbit/s, %ld resends, %ld lost", ap, d_freq, wifi_dbm(), d_rate,
+                d_retries - last_retries, d_fails - last_fails);
+  if (d_retries >= 0) { last_retries = d_retries; last_fails = d_fails; }
+  SDL_UnlockMutex(desc_lock);
 }
