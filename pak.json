@@ -2,7 +2,7 @@
   "name": "Kino",
   "version": "v1.0.0",
   "type": "TOOL",
-  "description": "Video player for the Brick: films and series from the SD card (it starts in Videos) or a Jellyfin server at home, with hardware decoding for H.264 and HEVC, resume, subtitles, picture filters and a cover grid. Drawn in Dot, the shared look of Kino, Musicdisk and Tuner.",
+  "description": "Video player for the TrimUI Brick and Smart Pro: films and series from the SD card (it starts in Videos) or a Jellyfin server at home, with hardware decoding for H.264 and HEVC, resume, subtitles, picture filters and a cover grid. Drawn in Dot, the shared look of Kino, Musicdisk and Tuner.",
   "author": "evolver79",
   "repo_url": "https://github.com/evolver79/nextui-kino-pak",
   "release_filename": "Kino.pak.zip",

@@ -4,8 +4,12 @@
 #include <stdint.h>
 
 #define KINO_VERSION "1.0.0"
-#define W 1024
-#define H 768
+#include "dot_tokens.h"
+// The device's screen (Brick 1024x768, Smart Pro 1280x720), from dot_screen_detect() at the start of main.
+#define W DOT_W
+#define H DOT_H
+#define DY (768 - H)        // how much shorter than the Brick's: 0 / 48
+#define DW (W - 1024)       // how much wider: 0 / 256
 #define THUMB_W 428
 #define THUMB_H 240
 #define POSTER_W 176   // Jellyfin poster grid (Dot: DOT_POSTER_W/H)
@@ -48,7 +52,7 @@ enum { FILTER_NONE, FILTER_SHARPEN, FILTER_WARM, FILTER_COOL, FILTER_BW, FILTER_
 extern const char *FILTER_NAMES[NFILTER], *ASPECT_NAMES[NASPECT];
 typedef struct {
   int aspect, brightness, contrast, deint;   // brightness/contrast -50..50 (mpv's -100..100 is too much)
-  int subs, leds, ground;                    // ground = Dot light point (test)
+  int subs, ground;                          // ground = Dot light point (test)
   int hwdec;                                 // the video engine for H.264/HEVC (src/cedar)
   int filter;                                // FILTER_*: L1/R1 while playing
   int sort;                                  // SORT_*: the Jellyfin cover grid (SELECT)
@@ -115,7 +119,3 @@ void player_sub_above(int pct);            // subtitles no lower than pct of the
 Uint32 player_accent(void);                // dominant colour of recent frames
 void player_report(const char *file, double secs, long frames, double cpu);   // --bench line
 
-// --- leds.c: "Lights follow video" -------------------------------------------------------------------------------
-void leds_start(void);              // remembers NextUI's LED setup
-void leds_follow(Uint32 rgb);       // while playing: show this colour (if the setting is on, else NextUI's)
-void leds_restore(void);            // NextUI's setup back

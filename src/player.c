@@ -188,8 +188,16 @@ static int probe(void *u) {
 // on its outer fifths only, where subtitles never are. Same rules as Tuner's.
 typedef struct { int l, r, t, b; } Crop;
 static int sub_top = 100;   // the highest sub-pos allowed (player_sub_above)
-void player_sub_above(int pct) { sub_top = pct; }
 static Crop crop_on, crop_cand; static int crop_n, crop_w, crop_h, crop_margin = -1; static Uint32 crop_at;   // crop_margin: sub-pos set
+// subtitles: up out of the bottom bar (sub-pos: where they sit, in % of the frame's height from the top; 100 is mpv's
+// bottom. sub-margin-y would be neater, but a loaded .srt keeps the margin it was opened with)
+static void sub_apply(void) {
+  int pos = 100 - (crop_h ? (crop_on.b * 100 + crop_h - 1) / crop_h : 0);
+  if (pos > sub_top) pos = sub_top;   // the controls are up: subtitles above them
+  if (pos != crop_margin) { crop_margin = pos; char m[16]; snprintf(m, sizeof m, "%d", pos); setp("sub-pos", m); }
+}
+// At once, not with the next frame: a paused film draws none, and its subtitles would stay under the controls.
+void player_sub_above(int pct) { if (pct != sub_top) { sub_top = pct; if (mpv) sub_apply(); } }
 #define CROP_LIT 3   // samples of 48 that may be bright in a bar (a logo, noise)
 static int crop_px_lit(const unsigned char *p) { return p[0] + p[1] + p[2] > 3 * 36; }   // bgr0
 static int crop_row_black(const unsigned char *px, int pitch, int y, int x0, int x1) {
@@ -243,11 +251,7 @@ static void crop_update(const unsigned char *px, int pitch, int w, int h) {
       }
     }
   }
-  // subtitles: up out of the bottom bar (sub-pos: where they sit, in % of the frame's height from the top; 100 is mpv's
-  // bottom. sub-margin-y would be neater, but a loaded .srt keeps the margin it was opened with)
-  int pos = 100 - (crop_h ? (crop_on.b * 100 + crop_h - 1) / crop_h : 0);
-  if (pos > sub_top) pos = sub_top;   // the controls are up: subtitles above them
-  if (pos != crop_margin) { crop_margin = pos; char m[16]; snprintf(m, sizeof m, "%d", pos); setp("sub-pos", m); }
+  sub_apply();
 }
 
 // Kino's log (NextUI's logs/Kino.txt) is meant to be shared when something goes wrong, so a Jellyfin key in a stream
@@ -521,7 +525,7 @@ void player_apply_settings(void) {
   #define ADD(...) n += snprintf(g + n, sizeof g - n, "%s", n ? "," : ""), n += snprintf(g + n, sizeof g - n, __VA_ARGS__)
   // First down to screen size: a 1080p picture has 2-3x the pixels the filters (and mpv after them) need.
   if ((settings.brightness || settings.contrast || settings.filter) && settings.filter != FILTER_CRT)
-    ADD("scale=w='min(iw,1024)':h='min(ih,768)':force_original_aspect_ratio=decrease:flags=fast_bilinear");
+    ADD("scale=w='min(iw,%d)':h='min(ih,%d)':force_original_aspect_ratio=decrease:flags=fast_bilinear", W, H);
   // Brightness as a curve on the light (limited range, 16-235) that keeps black black: dark scenes open up without
   // the bars and the night going grey, as an added brightness made them. Contrast stays mpv's eq.
   if (settings.contrast) ADD("eq=contrast=%.2f", 1 + settings.contrast / 50.0);
