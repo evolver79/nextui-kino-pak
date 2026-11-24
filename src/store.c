@@ -10,7 +10,7 @@ static Res *res;
 static int nres, capres, dirty;
 static char user[1024];
 
-Settings settings = { ASPECT_NOBARS, 0, 0, DEINT_AUTO, 1, 0, 0, 1, FILTER_NONE, SORT_NAME, 0, QUALITY_4, SUBSIZE_M, "eng", "", "", "", 1 };
+Settings settings = { ASPECT_NOBARS, 0, 0, DEINT_AUTO, 1, 0, 1, FILTER_NONE, SORT_NAME, 0, QUALITY_4, SUBSIZE_M, "eng", "", "", "", 1 };
 // Subtitle size: mpv's sub-scale on Kino's 54 (it scales styled ASS subtitles too, which a font size alone wouldn't)
 const char *SUBSIZE_NAMES[NSUBSIZE] = { "S", "M", "L", "XL" };
 const double SUBSIZE_SCALE[NSUBSIZE] = { 0.8, 1.0, 1.25, 1.55 };
@@ -47,7 +47,6 @@ static void settings_load(void) {
       static const char *was[5][2] = { { "eng", "" }, { "nor", "eng" }, { "nor", "" }, { "", "" }, { "eng", "nor" } };
       snprintf(settings.prefer1, 4, "%s", was[v][0]); snprintf(settings.prefer2, 4, "%s", was[v][1]);
     }
-    else if (!strcmp(k, "leds")) settings.leds = !!v;
     else if (!strcmp(k, "autonext")) settings.autonext = !!v;
     else if (!strcmp(k, "ground")) settings.ground = !!v;
     else if (!strcmp(k, "hwdec")) settings.hwdec = !!v;
@@ -63,11 +62,11 @@ static void settings_load(void) {
 void settings_save(void) {
   char p[1100]; snprintf(p, sizeof p, "%s/settings.txt", user);
   FILE *f = fopen(p, "w"); if (!f) return;
-  fprintf(f, "aspect=%d\nbrightness=%d\ncontrast=%d\ndeinterlace=%d\nsubtitles=%d\nprefer1=%s\nprefer2=%s\naprefer1=%s\naprefer2=%s\nautonext=%d\nleds=%d\nground=%d\nhwdec=%d\nfilter=%d\nsort=%d\nintro=%d\nquality=%d\nsubsize=%d\n",
+  fprintf(f, "aspect=%d\nbrightness=%d\ncontrast=%d\ndeinterlace=%d\nsubtitles=%d\nprefer1=%s\nprefer2=%s\naprefer1=%s\naprefer2=%s\nautonext=%d\nground=%d\nhwdec=%d\nfilter=%d\nsort=%d\nintro=%d\nquality=%d\nsubsize=%d\n",
           settings.aspect, settings.brightness, settings.contrast, settings.deint, settings.subs,
           *settings.prefer1 ? settings.prefer1 : "-", *settings.prefer2 ? settings.prefer2 : "-",
           *settings.aprefer1 ? settings.aprefer1 : "-", *settings.aprefer2 ? settings.aprefer2 : "-", settings.autonext,
-          settings.leds, settings.ground, settings.hwdec, settings.filter, settings.sort, settings.intro, settings.quality, settings.subsize);
+          settings.ground, settings.hwdec, settings.filter, settings.sort, settings.intro, settings.quality, settings.subsize);
   fclose(f);
 }
 

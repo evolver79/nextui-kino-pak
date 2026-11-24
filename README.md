@@ -1,6 +1,6 @@
 # Kino – video player for NextUI
 
-Plays films and series on the TrimUI Brick (`tg5040`), from the SD card's `Videos` folder or from a
+Plays films and series on the TrimUI Brick and the TrimUI Smart Pro (both `tg5040`), from the SD card's `Videos` folder or from a
 [Jellyfin](https://jellyfin.org) server on the home network. Drawn with [Dot](https://github.com/evolver79/nextui-dotui),
 the shared look of Kino, Musicdisk and Tuner.
 
@@ -20,6 +20,14 @@ from the Greek *kínēma*, movement, by way of the cinematograph.
 
 Screens rendered headless from the app with test clips (`build/shots.sh`).
 
+Tested on the Brick and the Smart Pro; each gets the layout for its own screen, and on the Smart Pro 16:9 films fill
+the screen. On the Smart Pro:
+
+<p>
+<img src="docs/screens/smartpro-browse-series.png" width="49%" alt="Browsing a series on the Smart Pro's wide screen">
+<img src="docs/screens/smartpro-local-grid.png" width="49%" alt="A folder of films as covers on the Smart Pro">
+</p>
+
 - **Hardware decoding:** H.264 and 8-bit HEVC up to 1080p play on the Brick's video engine (Allwinner CedarC, through
   an FFmpeg decoder in `src/cedar`), about one CPU core at 24 fps. Everything else decodes in software.
 - **SD card:** folders and files as rows with a picture and the facts of the selected one (length, resolution, codec).
@@ -30,8 +38,8 @@ Screens rendered headless from the app with test clips (`build/shots.sh`).
   app). Continue watching and Next up first, films and series as a cover grid, seasons and episodes as rows. Plays
   directly when the Brick can, otherwise the server converts it. Progress is reported back to the server.
 - **Up next:** when an episode ends, the next one plays after a 10-second countdown: the next file in the folder
-  on the SD card, or the series' next episode on Jellyfin. A plays it now, B stays in the list. Options > Brick >
-  Play next episode turns it off.
+  on the SD card, or the series' next episode on Jellyfin. A plays it now, B stays in the list. Options > Brick
+  (Device on the Smart Pro) > Play next episode turns it off.
 - **Skip intro and credits:** on Jellyfin, where the server has marked a film's intro, recap, preview or end credits
   (Jellyfin's media segments), a button shows at the bottom right while they play and X skips them. An episode's end
   credits go straight to Up next.
@@ -42,7 +50,7 @@ Screens rendered headless from the app with test clips (`build/shots.sh`).
   back to the list with your place kept. Wi-Fi power saving is off while a Jellyfin film plays.
 - **While playing:** picture filters (sharpen, warm, cool, black & white, retro CRT), aspect (original, 4:3, 16:9,
   stretch, zoom, or no bars: the film's own black bars cut away, so only pure black surrounds the picture), brightness
-  (it keeps black black), contrast, deinterlacing, and the Brick's lights can follow the colour of the picture.
+  (it keeps black black), contrast and deinterlacing.
 - **Sound and subtitles in your language:** the Audio and Subtitles tabs in Options each have Prefer and Then, chosen
   from about 45 languages, and Kino picks the matching track itself (the film's own when neither is there). A track
   you choose yourself is kept. This works for Jellyfin too, also when the server converts the film. Subtitles are in
@@ -84,7 +92,7 @@ Needs Docker (an ARM64 Debian bullseye container). `git clone --recursive` (Dot 
 
 ```sh
 build/build.sh    # fetches the library sources, builds FFmpeg, libass and libmpv once (several minutes), then build/out/kino
-build/shots.sh    # renders the screens headless to build/out/shots/*.png
+build/shots.sh    # renders the screens headless to build/out/shots/*.png (DOT_SCREEN=1280x720: the Smart Pro's)
 ```
 
 Copy `build/out/kino` and `ui/dot/fonts/` into `Kino.pak/`. (`deploy.sh` does that and copies the pak to the Brick
