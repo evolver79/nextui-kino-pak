@@ -126,13 +126,14 @@ static Uint32 next_poll;
 static int jf_play_from_start, jf_transcoded;
 static char jf_play_url[1400];
 static int shots_mode;
-// Poster grid (Jellyfin films and series): 2 rows of covers, 5 of 176 x 264 on the Brick, 7 of 157 x 235 on the Smart Pro
-// (grid_fit, at the start); textures for the covers in view, by url.
+// Poster grid (Jellyfin films and series): 2 rows of covers, 5 of 169 x 254 on the Brick, 7 of 153 x 230 on the Smart Pro
+// (grid_fit, at the start), with room under them for the next row's top to peek out as a list's does (Dot's dot_grid:
+// ending 12 px into the dock); textures for the covers in view, by url.
 static int GCOLS = 5, GPW = POSTER_W, GPH = POSTER_H;
 #define GPAGE (GCOLS * 2)
 #define GPAGE_MAX 16
 static void grid_fit(void) {
-  GPH = (DOT_CONTENT_BOTTOM - 96 - 16) / 2; if (GPH > POSTER_H) GPH = POSTER_H;
+  GPH = (DOT_DOCK_Y + 12 - DOT_PEEK - 96 - 2 * 16) / 2; if (GPH > POSTER_H) GPH = POSTER_H;
   GPW = GPH * POSTER_W / POSTER_H; GCOLS = (CW + 16) / (GPW + 16);
   if ((CW + 16) - GCOLS * (GPW + 16) > GPW / 2) {   // a lot left over: one more column, the covers a little smaller
     GCOLS++; GPW = (CW + 16) / GCOLS - 16; GPH = GPW * POSTER_H / POSTER_W;
@@ -825,6 +826,26 @@ static void len_label(double secs, char *out, size_t n) {   // "1h 52m", "44 min
   if (m >= 60) snprintf(out, n, "%dh %02dm", m / 60, m % 60); else if (m) snprintf(out, n, "%d min", m); else out[0] = 0;
 }
 
+// One cover of the grid at x, y (focus: with its ring).
+static void grid_cell(void *ud, int i, int x, int y, int focus) {
+  (void)ud;
+  char url[1100] = ""; float prog = 0; int seen = 0, fresh = 0;
+  if (jf_mode) {
+    JfItem *it = &jitems[i];
+    jf_poster_url(it, POSTER_W, POSTER_H, url, sizeof url);
+    prog = !it->folder && !it->played && it->pos > 0 && it->runtime > 0 ? (float)(it->pos / it->runtime) : 0;
+    seen = it->played; fresh = it->folder && it->unplayed > 0;
+  } else {
+    snprintf(url, sizeof url, "%s", cover_of(i));
+    if (!items[i].dir) {
+      char p[1400]; double pos, dur; item_path(i, p, sizeof p);
+      int st = store_resume(p, &pos, &dur);
+      seen = st == RES_SEEN; if (st == RES_PARTIAL && dur > 0) prog = (float)(pos / dur);
+    }
+  }
+  dot_poster(dot, *url ? poster_tex(url) : NULL, x, y, GPW, GPH, focus, prog, seen, fresh);
+}
+
 static int amb_on;   // the grid has its picture background (light header, night dock)
 static void draw_grid(void) {   // 5 x 2 covers; the focused one's name in the header
   char label[96], lab[64], name[256];
@@ -854,24 +875,11 @@ static void draw_grid(void) {   // 5 x 2 covers; the focused one's name in the h
   int lw = dot_text_w(dot, DOT_LABEL_T, label);
   dot_text(dot, DOT_TITLE, name, 40, 22, DOT_ON_GROUND, DOT_LEFT, CW - lw - 40);
   dot_text(dot, DOT_LABEL_T, label, RIGHT, 30, DOT_ON_GROUND, DOT_RIGHT, 0);
-  for (int i = top; i < nitems && i < top + GPAGE; i++) {
-    char url[1100] = ""; float prog = 0; int seen = 0, fresh = 0;
-    if (jf_mode) {
-      JfItem *it = &jitems[i];
-      jf_poster_url(it, POSTER_W, POSTER_H, url, sizeof url);
-      prog = !it->folder && !it->played && it->pos > 0 && it->runtime > 0 ? (float)(it->pos / it->runtime) : 0;
-      seen = it->played; fresh = it->folder && it->unplayed > 0;
-    } else {
-      snprintf(url, sizeof url, "%s", cover_of(i));
-      if (!items[i].dir) {
-        char p[1400]; double pos, dur; item_path(i, p, sizeof p);
-        int st = store_resume(p, &pos, &dur);
-        seen = st == RES_SEEN; if (st == RES_PARTIAL && dur > 0) prog = (float)(pos / dur);
-      }
-    }
-    int x = 40 + (i - top) % GCOLS * (GPW + 16), y = 96 + (i - top) / GCOLS * (GPH + 16);
-    dot_poster(dot, *url ? poster_tex(url) : NULL, x, y, GPW, GPH, i == cursor, prog, seen, fresh);
-  }
+  // The covers move the Dot way (dot_grid): the rows slide, the focus ring slides, the next row peeks out.
+  static DotGrid dg;
+  unsigned key = (unsigned)jf_mode * 7u + (unsigned)jf_depth * 131u + (unsigned)nitems * 17u + (unsigned)settings.sort;
+  for (const char *c = jf_mode ? jstack[jf_depth].name : cwd; *c; c++) key = key * 33u + (unsigned char)*c;
+  dot_grid(dot, &dg, (int)key, nitems, GCOLS, 2, top, cursor, 40, 96, GPW, GPH, 16, 1, grid_cell, NULL);
   DotHint h[4]; int n = 0;
   if (folder) h[n++] = (DotHint){ "A", "Open" };
   else h[n++] = (DotHint){ "A", resumable ? "Resume" : "Play" };
@@ -981,6 +989,34 @@ static const char *focused_cover(char *buf, size_t n) {
   snprintf(buf, n, "%s", cover_of(cursor)); return buf;
 }
 
+// One row of the browser's list at y (sel: drawn focused, on the paper).
+static void browse_row(void *ud, int i, int y, int sel) {
+  int mixed = *(int *)ud;
+  char title[256], meta[32] = "", path[1400];
+  title_of(items[i].name, title, sizeof title);
+  if (jf_mode) {
+    JfItem *it = &jitems[i];
+    snprintf(title, sizeof title, "%s", items[i].name);
+    if (it->played) snprintf(meta, sizeof meta, "SEEN");
+    else if (it->pos > 0 && it->runtime > 0) snprintf(meta, sizeof meta, "%d%%", (int)(100 * it->pos / it->runtime));
+    else if (it->folder && it->unplayed) snprintf(meta, sizeof meta, "%d NEW", it->unplayed);
+    else if (!it->folder && it->runtime > 0) fmt_time(it->runtime, meta, sizeof meta);
+  } else if (!items[i].dir) {
+    item_path(i, path, sizeof path);
+    double pos, dur; MediaInfo mi;
+    int st = store_resume(path, &pos, &dur);
+    if (st == RES_SEEN) snprintf(meta, sizeof meta, "SEEN");
+    else if (st == RES_PARTIAL && dur > 0) snprintf(meta, sizeof meta, "%d%%", (int)(100 * pos / dur));
+    else if (media_info(path, &mi) && mi.duration > 0) fmt_time(mi.duration, meta, sizeof meta);
+  }
+  int off = items[i].virt && jf_offline();
+  if (off) snprintf(meta, sizeof meta, "NO WI-FI");
+  int icon = items[i].virt ? DOT_I_TV : jf_mode && !strcmp(jitems[i].type, "Special") ? DOT_I_PLAY : items[i].dir ? DOT_I_FOLDER : DOT_I_FILM;
+  if (icon == DOT_I_FILM && !mixed) icon = DOT_I_NONE;   // only videos here: the icon says nothing, the title gets the room
+  dot_row(dot, 476, y, 484 + DW, icon, items[i].dir && !jf_mode ? items[i].name : title, NULL, meta,
+          (sel ? DOT_FOCUS : 0) | (off ? DOT_OFF : 0), 0);
+}
+
 static void draw_browse(void) {
   dot_set_ground(dot, settings.ground ? DOT_GROUND_TOPCENTRE : DOT_GROUND_TOPLEFT);
   dot_set_backdrop(dot, NULL);
@@ -1021,41 +1057,14 @@ static void draw_browse(void) {
   else snprintf(count, sizeof count, nitems == 1 ? "1 item" : "%d items", nitems);
   dot_header(dot, crumb, count);
   draw_detail();
+  // The rows move the Dot way (dot_list): they slide when the list scrolls, the paper slides to the focused row, and
+  // the next row's top peeks out under the last when there's more.
   int mixed = 0;   // folders (or the Jellyfin row) among the videos: keep the film icon to tell them apart
   for (int i = 0; i < nitems && !mixed; i++) mixed = items[i].dir || items[i].virt;
-  for (int i = top; i < nitems && i < top + ROWS; i++) {
-    char title[256], meta[32] = "", path[1400];
-    title_of(items[i].name, title, sizeof title);
-    if (jf_mode) {
-      JfItem *it = &jitems[i];
-      snprintf(title, sizeof title, "%s", items[i].name);
-      if (it->played) snprintf(meta, sizeof meta, "SEEN");
-      else if (it->pos > 0 && it->runtime > 0) snprintf(meta, sizeof meta, "%d%%", (int)(100 * it->pos / it->runtime));
-      else if (it->folder && it->unplayed) snprintf(meta, sizeof meta, "%d NEW", it->unplayed);
-      else if (!it->folder && it->runtime > 0) fmt_time(it->runtime, meta, sizeof meta);
-    } else if (!items[i].dir) {
-      item_path(i, path, sizeof path);
-      double pos, dur; MediaInfo mi;
-      int st = store_resume(path, &pos, &dur);
-      if (st == RES_SEEN) snprintf(meta, sizeof meta, "SEEN");
-      else if (st == RES_PARTIAL && dur > 0) snprintf(meta, sizeof meta, "%d%%", (int)(100 * pos / dur));
-      else if (media_info(path, &mi) && mi.duration > 0) fmt_time(mi.duration, meta, sizeof meta);
-    }
-    int off = items[i].virt && jf_offline();
-    if (off) snprintf(meta, sizeof meta, "NO WI-FI");
-    int icon = items[i].virt ? DOT_I_TV : jf_mode && !strcmp(jitems[i].type, "Special") ? DOT_I_PLAY : items[i].dir ? DOT_I_FOLDER : DOT_I_FILM;
-    if (icon == DOT_I_FILM && !mixed) icon = DOT_I_NONE;   // only videos here: the icon says nothing, the title gets the room
-    dot_row(dot, 476, 96 + (DOT_ROW_H + 12) * (i - top), 484 + DW, icon,
-            items[i].dir && !jf_mode ? items[i].name : title, NULL, meta, (i == cursor ? DOT_FOCUS : 0) | (off ? DOT_OFF : 0), 0);
-  }
-  if (nitems > ROWS) {   // more than a screen: a dotted track in the right margin, the part in view lit
-    int y0 = 96 + 6, y1 = 96 + (DOT_ROW_H + 12) * ROWS - 12 - 6, n = (y1 - y0) / DOT_DOT_PITCH + 1;
-    float a = (float)top / nitems, b = (float)(top + ROWS) / nitems;
-    for (int k = 0; k < n; k++) {
-      float c = (k + .5f) / n; int lit = c >= a && c <= b, cy = y0 + k * DOT_DOT_PITCH;
-      dot_rect(dot, 974 + DW - DOT_DOT_R, cy - DOT_DOT_R, 2 * DOT_DOT_R, 2 * DOT_DOT_R, DOT_DOT_R, DOT_TEXT, lit ? 255 : 90);
-    }
-  }
+  static DotList dl;
+  unsigned key = (unsigned)jf_mode * 7u + (unsigned)jf_depth * 131u + (unsigned)nitems;   // which list: where, how long
+  for (const char *c = jf_mode ? jstack[jf_depth].name : cwd; *c; c++) key = key * 33u + (unsigned char)*c;
+  dot_list(dot, &dl, (int)key, nitems, ROWS, top, cursor, 476, 484 + DW, 1, browse_row, &mixed);
   DotHint h[4]; int n = 0;
   if (jf_mode) {
     if (nitems && !jf_loading) {
@@ -1729,7 +1738,7 @@ static void shots(const char *out) {
       set_cursor(1);
       for (int t = 0; t < 300; t++) {   // until the covers in view are in
         int all = 1; const uint8_t *rgb;
-        for (int i = top; i < nitems && i < top + GPAGE; i++) { char u[600]; jf_poster_url(&jitems[i], POSTER_W, POSTER_H, u, sizeof u); all &= media_poster(u, &rgb); }
+        for (int i = top; i < nitems && i < top + GPAGE + GCOLS && i < nitems; i++) { char u[600]; jf_poster_url(&jitems[i], POSTER_W, POSTER_H, u, sizeof u); all &= media_poster(u, &rgb); }
         if (all) break;
         SDL_Delay(50);
       }
@@ -1740,7 +1749,7 @@ static void shots(const char *out) {
           jf_sort_next(); want_media();
           for (int t = 0; t < 300; t++) {
             int all = 1; const uint8_t *rgb;
-            for (int i = top; i < nitems && i < top + GPAGE; i++) { char u[600]; jf_poster_url(&jitems[i], POSTER_W, POSTER_H, u, sizeof u); all &= media_poster(u, &rgb); }
+            for (int i = top; i < nitems && i < top + GPAGE + GCOLS && i < nitems; i++) { char u[600]; jf_poster_url(&jitems[i], POSTER_W, POSTER_H, u, sizeof u); all &= media_poster(u, &rgb); }
             if (all) break;
             SDL_Delay(50);
           }
@@ -1826,6 +1835,7 @@ int main(int argc, char **argv) {
   media_start(p);
 
   shots_mode = shots_dir != NULL;
+  dot_set_still(dot, shots_mode);   // screenshots: everything drawn where it ends up (Dot, Motion)
   if (shots_dir) shots(shots_dir);
   else {
     list_dir();
