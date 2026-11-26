@@ -1,12 +1,13 @@
 {
   "name": "Kino",
-  "version": "v1.1.0",
+  "version": "v1.2.0",
   "type": "TOOL",
   "description": "Video player for the TrimUI Brick and Smart Pro: films and series from the SD card (it starts in Videos) or a Jellyfin server at home, with hardware decoding for H.264 and HEVC, resume, subtitles, picture filters and a cover grid. Drawn in Dot, the shared look of Kino, Musicdisk and Tuner.",
   "author": "evolver79",
   "repo_url": "https://github.com/evolver79/nextui-kino-pak",
   "release_filename": "Kino.pak.zip",
   "changelog": {
+    "v1.2.0": "Kino moves the Dot way: lists and the cover grid slide, the next and previous rows peek out fading, and long titles scroll when focused. The controls are a band that slides up from the bottom edge. Starting, buffering and reconnecting show as a card in the middle, and filter, aspect and sort changes as a notice. ▲ while playing opens a picker for the sound track and subtitles. Menus run at 60 frames a second. On the Smart Pro the picture on the info card fills its width.",
     "v1.1.0": "Runs on the TrimUI Smart Pro too, laid out for its wide screen, and 16:9 films fill it. Paused subtitles move above the controls at once. The Lights setting is gone: Kino leaves the LEDs to NextUI. Jellyfin films log the Wi-Fi (node, channel, signal, resends) for reports. Tested on the Brick and the Smart Pro.",
     "v1.0.0": "Kino 1.0: Up next plays the next episode after a short countdown, from the SD card or Jellyfin (A now, B not now; off in Options). Skip intro, recap and credits on Jellyfin episodes with X, where the server has marked them. A new Audio tab picks the sound track, and Prefer and Then choose the sound language the same way as subtitles, also when Jellyfin converts the film.",
     "v0.10.1": "Subtitles in your language: Prefer and Then choose from about 45 languages, and Kino picks the matching track itself, also from Jellyfin, where a track named \"English\" didn't count as English. Changing them while a film plays switches straight away, and a track you choose yourself is kept. Subtitles keep their shape with 4:3, 16:9 and Stretch, and stay sharp on videos smaller than the screen.",
