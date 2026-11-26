@@ -2008,7 +2008,10 @@ int main(int argc, char **argv) {
     while (running) {
       loop_tick = SDL_GetTicks();
       SDL_Event e;
-      int r, got = SDL_WaitEventTimeout(&e, 33);
+      // menus: about 60 frames a second, so lists and cards move smoothly (Dot's motion); playing: the film paces it
+      static Uint32 frame_at;   // when the last frame was drawn: wait only for what's left of this one
+      int period = screen == SCR_PLAY ? 33 : 16, since = (int)(SDL_GetTicks() - frame_at);
+      int r, got = SDL_WaitEventTimeout(&e, since >= period ? 1 : period - since);
       while (got) {
         if (e.type == SDL_QUIT) running = 0;
         else if (e.type == SDL_CONTROLLERBUTTONDOWN) {
@@ -2075,6 +2078,7 @@ int main(int argc, char **argv) {
       int fresh = player_active() && player_frame();
       if (screen == SCR_PLAY && !fresh && !player_paused() && !on_bar && SDL_GetTicks() >= overlay_until + DOT_SLIDE_MS + 50 &&
           !notice_at && !busy_shown && !picker_shown && !lost_tries && player_buffering() < 0) continue;
+      frame_at = SDL_GetTicks();
       draw();
       SDL_RenderPresent(ren);
     }
