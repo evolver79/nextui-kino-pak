@@ -1168,8 +1168,13 @@ static void draw_overlay(float e) {
   dot_round(dot, 806 + DW, 570 - dy, paused ? DOT_I_PLAY : DOT_I_PAUSE, 1, seeking || on_bar ? 0 : DOT_FOCUS);
   dot_round(dot, 900 + DW, 570 - dy, DOT_I_FWD, 0, seeking > 0 ? DOT_FOCUS | DOT_ON : 0);
   dot_progress(dot, 76, 644 - dy, CW - 72, len > 0 ? (float)(pos / len) : 0, on_bar ? 2 : 1);
-  dot_text(dot, DOT_PILL_MONO, on_bar ? "◀ ▶ move · L1 R1 faster · A jump here · B cancel" : "◀ ▶ 10 s · ▲ audio, subs · ▼ scrub · L1 R1 filter · L2 R2 aspect",
-           76, 690 - dy, DOT_LABEL, DOT_LEFT, CW - 72);
+  // the buttons: the longest way of putting it that fits (the Brick's narrower band gets the short one)
+  static const char *const HINTS[] = { "◀ ▶ 10 s · ▲ audio, subs · ▼ scrub · L1 R1 filter · L2 R2 aspect",
+                                       "◀ ▶ 10 s · ▲ audio, subs · ▼ scrub · L1 R1 L2 R2 picture",
+                                       "◀ ▶ 10 s · ▲ tracks · ▼ scrub · L1 R1 L2 R2 picture" };
+  const char *hint = on_bar ? "◀ ▶ move · L1 R1 faster · A jump here · B cancel" : HINTS[0];
+  for (int i = 1; !on_bar && i < 3 && dot_text_w(dot, DOT_PILL_MONO, hint) > CW - 72; i++) hint = HINTS[i];
+  dot_text(dot, DOT_PILL_MONO, hint, 76, 690 - dy, DOT_LABEL, DOT_LEFT, CW - 72);
 }
 
 // A film that broke off (or a Jellyfin one stuck waiting): try again in 2, 4, 6, 8, 10 s, asking the server for a fresh
@@ -1832,7 +1837,7 @@ static void shots(const char *out) {
     settings.aspect = ASPECT_4_3; player_apply_settings(); pump(800); shot(out, "playing-subtitles-4-3");
     settings.aspect = was; player_apply_settings(); pump(400); }
   player_seek(-8); pump(600);   // back a little: the 10 s seek below must stay inside the 30 s test episode
-  player_pause(1); pump(400);
+  player_pause(1); draw(); pump(400);   // drawn once first: the subtitles go above the band before the shot
   shot(out, "playing");
   on_button(BTN_RIGHT); pump(200); shot(out, "playing-seek");
   on_button(BTN_DOWN); for (int i = 0; i < 12; i++) on_button(BTN_RIGHT);

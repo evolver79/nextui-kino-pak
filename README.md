@@ -9,8 +9,10 @@ from the Greek *kínēma*, movement, by way of the cinematograph.
 
 <p>
 <img src="docs/screens/browse-series.png" width="49%" alt="Browsing a series: the selected episode's picture, facts and resume time on the left, the episodes as rows on the right">
+<img src="docs/screens/browse-scrolled.png" width="49%" alt="A list scrolled down: the row before peeks out under the header and the next one under the last, both fading">
 <img src="docs/screens/local-grid.png" width="49%" alt="A folder of films as covers, made from frames of the films or a picture next to them">
-<img src="docs/screens/playing.png" width="49%" alt="Playing, paused: the time in dot-matrix numbers, rewind, play and forward, and a dotted progress bar">
+<img src="docs/screens/playing.png" width="49%" alt="Playing, paused: the controls in a band along the bottom, the time in dot-matrix numbers, rewind, play and forward, and a dotted progress bar; the subtitles above it">
+<img src="docs/screens/playing-picker.png" width="49%" alt="The subtitle picker in the middle of the film: Off and English, the one in use marked">
 <img src="docs/screens/next-episode.png" width="49%" alt="Up next: the next episode's picture and name, and a ten-second countdown in dots">
 <img src="docs/screens/options.png" width="49%" alt="Options in four tabs: Picture, Audio, Subtitles and Brick">
 <img src="docs/screens/options-audio.png" width="49%" alt="The Audio tab: the sound track, and the languages to prefer">
@@ -26,8 +28,14 @@ the screen. On the Smart Pro:
 <p>
 <img src="docs/screens/smartpro-browse-series.png" width="49%" alt="Browsing a series on the Smart Pro's wide screen">
 <img src="docs/screens/smartpro-local-grid.png" width="49%" alt="A folder of films as covers on the Smart Pro">
+<img src="docs/screens/smartpro-playing.png" width="49%" alt="Playing on the Smart Pro, paused, the controls in a band along the bottom">
+<img src="docs/screens/smartpro-next-episode.png" width="49%" alt="Up next on the Smart Pro">
 </p>
 
+- **Moves smoothly:** lists slide and their highlight slides with them; the row before and the row after peek out,
+  fading, so you can see there's more; in the cover grid the focus ring glides from cover to cover. Long titles scroll
+  when they're focused. The controls slide up from the bottom edge as a band, and waiting (starting, buffering,
+  reconnecting) and choices (filter, aspect, sort) show as a card in the middle.
 - **Hardware decoding:** H.264 and 8-bit HEVC up to 1080p play on the Brick's video engine (Allwinner CedarC, through
   an FFmpeg decoder in `src/cedar`), about one CPU core at 24 fps. Everything else decodes in software.
 - **SD card:** folders and files as rows with a picture and the facts of the selected one (length, resolution, codec).
@@ -45,15 +53,15 @@ the screen. On the Smart Pro:
   credits go straight to Up next.
 - **Streaming over Wi-Fi:** Jellyfin quality in Options sets the most the server may send (2, 4 or 8 Mbit/s, or
   max; 4 by default, plenty for the screen and light on the Brick's 2.4 GHz Wi-Fi); bigger files are converted to
-  fit. A pill at the top shows when a film is buffering or waiting for the server, with a note when the Wi-Fi is
-  weak. When the stream breaks off, Kino reconnects and carries on where it was (five tries); if that fails it goes
+  fit. A card in the middle shows when a film is starting, buffering, waiting for the server or reconnecting, with
+  a note when the Wi-Fi is weak. When the stream breaks off, Kino reconnects and carries on where it was (five tries); if that fails it goes
   back to the list with your place kept. Wi-Fi power saving is off while a Jellyfin film plays.
 - **While playing:** picture filters (sharpen, warm, cool, black & white, retro CRT), aspect (original, 4:3, 16:9,
   stretch, zoom, or no bars: the film's own black bars cut away, so only pure black surrounds the picture), brightness
   (it keeps black black), contrast and deinterlacing.
 - **Sound and subtitles in your language:** the Audio and Subtitles tabs in Options each have Prefer and Then, chosen
   from about 45 languages, and Kino picks the matching track itself (the film's own when neither is there). A track
-  you choose yourself is kept. This works for Jellyfin too, also when the server converts the film. Subtitles are in
+  you choose yourself is kept: while playing, ▲ opens a picker in the middle with the sound tracks and subtitles. This works for Jellyfin too, also when the server converts the film. Subtitles are in
   Noto Sans, in four sizes, from the film, a file next to it or Jellyfin, and keep their shape with any aspect.
 
 ## Buttons
@@ -65,6 +73,7 @@ the screen. On the Smart Pro:
 | X | play from the start | skip the intro, recap or credits (when the button shows) |
 | Y | options | options |
 | ◄ ► | a page (rows) or move (covers) | 10 seconds back, forward |
+| ▲ | | sound track and subtitles: a picker (◄ ► between them, ▲ ▼ chooses, A or B closes) |
 | ▼ | | to the progress bar to scrub; A jumps there |
 | L1 / R1 | a page | picture filter |
 | L2 / R2 | | aspect |
