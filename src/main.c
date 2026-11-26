@@ -1128,32 +1128,42 @@ static void draw_video(void) {
   }
 }
 
-static void draw_overlay(void) {
+// The controls: a band along the bottom edge, full width and square (Dot's dot_band), from y 500 on the Brick (48
+// higher on the Smart Pro). It slides up and down (dot_slide; e: how far up, 0-1) and what's on it moves with it; the
+// pills at the top fade with it.
+#define BAND_Y (500 - DY)
+static int band_top = 768;   // where the band's top is now (the screen's height when it's down): the toast goes above it
+static void draw_overlay(float e) {
   dot_set_accent(dot, player_accent());
   char buf[64], dur[32];
+  int off = (int)lroundf((1 - e) * (H - BAND_Y));   // how far below its place the band is
+  band_top = BAND_Y + off;
+  dot_set_alpha(dot, e);
   dot_pill(dot, 40, 36, playing_title, 1, 0, DOT_LEFT);
   MediaInfo mi;
   if (jf_playing) dot_pill(dot, RIGHT, 36, jf_transcoded ? "Jellyfin · converted" : "Jellyfin · direct", 0, 1, DOT_RIGHT);
   else if (media_info(playing, &mi)) { media_audio_label(&mi, buf, sizeof buf); dot_pill(dot, RIGHT, 36, buf, 0, 1, DOT_RIGHT); }
+  dot_set_alpha(dot, 1);
+  if (off >= H - BAND_Y) return;
   double pos = player_pos(), len = player_duration();
   int paused = player_paused();
   if (on_bar) pos = scrub_to;
-  // the controls' card along the bottom (y 500 on the Brick, 48 higher on the Smart Pro); what's on it moves with it
-  dot_set_night(dot, 1); dot_card(dot, 40, 500 - DY, CW, 232); dot_set_night(dot, 0);   // solid over video
+  dot_band(dot, band_top, H - band_top);
+  int dy = DY - off;   // the band's contents: at their places, moved down as far as the band is
   fmt_time(pos, buf, sizeof buf);
-  int tw = dot_time(dot, DOT_DISPLAY_XL, buf, 76, 526 - DY, DOT_TEXT, DOT_LEFT);
+  int tw = dot_time(dot, DOT_DISPLAY_XL, buf, 76, 526 - dy, DOT_TEXT, DOT_LEFT);
   int lx = 76 + tw + 30;
   fmt_time(len, dur, sizeof dur); snprintf(buf, sizeof buf, "/ %s", dur);
-  dot_text(dot, DOT_LABEL_T, buf, lx, 546 - DY, DOT_LABEL, DOT_LEFT, 0);
-  dot_adot(dot, lx, 588 - DY, dot_accent(dot));
-  dot_text(dot, DOT_LABEL_T, paused ? "Paused" : "Playing", lx + 32, 584 - DY, DOT_TEXT, DOT_LEFT, 0);
+  dot_text(dot, DOT_LABEL_T, buf, lx, 546 - dy, DOT_LABEL, DOT_LEFT, 0);
+  dot_adot(dot, lx, 588 - dy, dot_accent(dot));
+  dot_text(dot, DOT_LABEL_T, paused ? "Paused" : "Playing", lx + 32, 584 - dy, DOT_TEXT, DOT_LEFT, 0);
   int seeking = !on_bar && SDL_GetTicks() < seek_until ? seek_dir : 0;   // the pressed side is lit, with the ring
-  dot_round(dot, 702 + DW, 570 - DY, DOT_I_BACK, 0, seeking < 0 ? DOT_FOCUS | DOT_ON : 0);
-  dot_round(dot, 806 + DW, 570 - DY, paused ? DOT_I_PLAY : DOT_I_PAUSE, 1, seeking || on_bar ? 0 : DOT_FOCUS);
-  dot_round(dot, 900 + DW, 570 - DY, DOT_I_FWD, 0, seeking > 0 ? DOT_FOCUS | DOT_ON : 0);
-  dot_progress(dot, 76, 644 - DY, CW - 72, len > 0 ? (float)(pos / len) : 0, on_bar ? 2 : 1);
+  dot_round(dot, 702 + DW, 570 - dy, DOT_I_BACK, 0, seeking < 0 ? DOT_FOCUS | DOT_ON : 0);
+  dot_round(dot, 806 + DW, 570 - dy, paused ? DOT_I_PLAY : DOT_I_PAUSE, 1, seeking || on_bar ? 0 : DOT_FOCUS);
+  dot_round(dot, 900 + DW, 570 - dy, DOT_I_FWD, 0, seeking > 0 ? DOT_FOCUS | DOT_ON : 0);
+  dot_progress(dot, 76, 644 - dy, CW - 72, len > 0 ? (float)(pos / len) : 0, on_bar ? 2 : 1);
   dot_text(dot, DOT_PILL_MONO, on_bar ? "◀ ▶ move · L1 R1 faster · A jump here · B cancel" : "◀ ▶ 10 s · ▼ scrub · L1 R1 filter · L2 R2 aspect",
-           76, 690 - DY, DOT_LABEL, DOT_LEFT, CW - 72);
+           76, 690 - dy, DOT_LABEL, DOT_LEFT, CW - 72);
 }
 
 // A film that broke off (or a Jellyfin one stuck waiting): try again in 2, 4, 6, 8, 10 s, asking the server for a fresh
@@ -1420,10 +1430,11 @@ static int skip_now(const char **label, double *to, int *credits) {
   }
   return 0;
 }
-static void draw_skip(int controls) {
+static void draw_skip(float e) {   // e: how far up the band is (the button rides above it)
   const char *label; double to; int credits;
   if (!skip_now(&label, &to, &credits)) return;
-  int tw = dot_text_w(dot, DOT_UI, label), w = 16 + DOT_KEY + 14 + tw + 26, h = 80, x = RIGHT - w, y = (controls ? 404 : 652) - DY;
+  int tw = dot_text_w(dot, DOT_UI, label), w = 16 + DOT_KEY + 14 + tw + 26, h = 80, x = RIGHT - w,
+      y = 652 - DY - (int)lroundf(248 * e);
   dot_rect(dot, x, y, w, h, DOT_R_CARD, DOT_GLASS, 225);
   dot_key(dot, x + 16, y + (h - DOT_KEY) / 2, "X", 1, 0);
   dot_text(dot, DOT_UI, label, x + 16 + DOT_KEY + 14, y + (h - dot_line_h(dot, DOT_UI)) / 2, DOT_TEXT, DOT_LEFT, 0);
@@ -1442,20 +1453,26 @@ static void draw(void) {
   else {
     draw_video();
     int controls = player_paused() || on_bar || now < overlay_until;
-    // the panel covers the bottom third: subtitles go above it, about 35 px clear of it (64 % of a 16:9 picture on the
-    // Brick; on the Smart Pro's taller picture, worked out from where it is)
+    static DotSlide band;
+    float e = dot_slide(dot, &band, controls);
+    // the band covers the bottom third: subtitles go above it, about 35 px clear of it (64 % of a 16:9 picture on the
+    // Brick; on the Smart Pro's taller picture, worked out from where it is), following it as it slides
     int above = 64;
-    if (DY && video_dst.h > 0) { above = (500 - DY - 35 - video_dst.y) * 100 / video_dst.h; above = above < 10 ? 10 : above > 100 ? 100 : above; }
-    player_sub_above(controls ? above : 100);
-    if (controls) draw_overlay();
-    draw_skip(controls);
+    if (DY && video_dst.h > 0) { above = (BAND_Y - 35 - video_dst.y) * 100 / video_dst.h; above = above < 10 ? 10 : above > 100 ? 100 : above; }
+    player_sub_above(100 - (int)lroundf((100 - above) * e));
+    band_top = H;
+    if (e > 0) draw_overlay(e);
+    draw_skip(e);
   }
   if (screen == SCR_PLAY) dot_set_accent(dot, player_accent());   // over the film: its colour, as the controls
   draw_busy();   // waiting: over any screen (starting from the list, changing the sound from Options)
   if (notice_at && !dot_notice(dot, notice_icon, notice_label, notice_value, notice_at_n, notice_n, notice_at)) notice_at = 0;
   if (now < toast_until) {
     Uint32 left = toast_until - now;
-    dot_toast(dot, toast, left < DOT_FADE_MS ? left / (float)DOT_FADE_MS : 1);
+    float a = left < DOT_FADE_MS ? left / (float)DOT_FADE_MS : 1;
+    if (screen == SCR_PLAY && band_top < H) {   // over a film with the band up: above the band, not on it
+      dot_set_alpha(dot, a); dot_pill(dot, W / 2, band_top - 24 - DOT_PILL_H, toast, 1, 0, DOT_CENTER); dot_set_alpha(dot, 1);
+    } else dot_toast(dot, toast, a);
   }
 }
 
@@ -1958,7 +1975,7 @@ int main(int argc, char **argv) {
         if (next_go) start_next(); else { next_kind = 0; screen = SCR_BROWSE; }
       }
       int fresh = player_active() && player_frame();
-      if (screen == SCR_PLAY && !fresh && !player_paused() && !on_bar && SDL_GetTicks() >= overlay_until + 100 &&
+      if (screen == SCR_PLAY && !fresh && !player_paused() && !on_bar && SDL_GetTicks() >= overlay_until + DOT_SLIDE_MS + 50 &&
           !notice_at && !busy_shown && !lost_tries && player_buffering() < 0) continue;
       draw();
       SDL_RenderPresent(ren);
