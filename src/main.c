@@ -1162,7 +1162,7 @@ static void draw_overlay(float e) {
   dot_round(dot, 806 + DW, 570 - dy, paused ? DOT_I_PLAY : DOT_I_PAUSE, 1, seeking || on_bar ? 0 : DOT_FOCUS);
   dot_round(dot, 900 + DW, 570 - dy, DOT_I_FWD, 0, seeking > 0 ? DOT_FOCUS | DOT_ON : 0);
   dot_progress(dot, 76, 644 - dy, CW - 72, len > 0 ? (float)(pos / len) : 0, on_bar ? 2 : 1);
-  dot_text(dot, DOT_PILL_MONO, on_bar ? "◀ ▶ move · L1 R1 faster · A jump here · B cancel" : "◀ ▶ 10 s · ▼ scrub · L1 R1 filter · L2 R2 aspect",
+  dot_text(dot, DOT_PILL_MONO, on_bar ? "◀ ▶ move · L1 R1 faster · A jump here · B cancel" : "◀ ▶ 10 s · ▲ audio, subs · ▼ scrub · L1 R1 filter · L2 R2 aspect",
            76, 690 - dy, DOT_LABEL, DOT_LEFT, CW - 72);
 }
 
@@ -1240,10 +1240,12 @@ static void draw_busy(void) {
 
 static const char *DEINTS[NDEINT] = { "AUTO", "ON", "OFF" };
 
-// Tabs at the top right, between L1 and R1 key caps; the active one lit.
-static void draw_tabs(const char *const *names, int n, int active) {
-  int tx = DOT_W - DOT_MARGIN;   // no L1/R1 caps here: the dock says "L1 R1", and four tabs need the room
-  for (int i = n - 1; i >= 0; i--) { tx -= dot_text_w(dot, DOT_CHIP_T, names[i]) + 40; dot_chip(dot, tx, 28, names[i], i == active ? DOT_ON : 0); tx -= 8; }
+// Tabs at the top right: Dot's switch, its paper sliding to the active one (L1/R1; the dock says so). Equal parts, as
+// wide as the longest name needs.
+static void draw_tabs(DotSwitch *sw, const char *const *names, int n, int active) {
+  int seg = 0;
+  for (int i = 0; i < n; i++) { int w = dot_text_w(dot, DOT_CHIP_T, names[i]) + 48; if (w > seg) seg = w; }
+  dot_switch(dot, sw, DOT_W - DOT_MARGIN - seg * n, 28, seg * n, names, n, active, 0);
 }
 
 // The sound track. A stream the server converts carries one track: Kino lists the film's tracks from the server and
@@ -1261,16 +1263,92 @@ static const char *audio_label(void) {
   return "AUTO";
 }
 static int audio_count(void) { return jf_audio_mode() ? jf_audio_count() : player_audio_tracks(); }
-static void audio_switch(int dir) {
-  if (!jf_audio_mode()) { if (player_active()) player_cycle_audio(dir); return; }
-  int n = jf_audio_count(), cur = 0, idx; const char *code;
-  if (n < 2 || job_th) return;
-  for (int i = 0; jf_audio(i, &idx, &code); i++) if (idx == jf_audio_now()) cur = i;
-  jf_audio(((cur + dir) % n + n) % n, &idx, &code);
+// The sound tracks by name ("NORSK"), and the one in use: the film's own, or the server's list for a converted stream.
+static int audio_items(char names[][40], int max, int *now) {
+  if (!jf_audio_mode()) return player_audio_list(names, max, now);
+  int n = 0, idx; const char *code; *now = -1;
+  for (; n < max && jf_audio(n, &idx, &code); n++) {
+    const char *name = lang_label(code);
+    if (name) snprintf(names[n], 40, "%s", name); else snprintf(names[n], 40, "TRACK %d", n + 1);
+    if (idx == jf_audio_now()) *now = n;
+  }
+  return n;
+}
+static void audio_pick(int i) {   // a converted stream: asked for again with that track, from where it is
+  if (!jf_audio_mode()) { player_set_audio(i); return; }
+  int idx; const char *code;
+  if (job_th || !jf_audio(i, &idx, &code) || idx == jf_audio_now()) return;
   jf_audio_want = idx;   // kept for this film, also through reconnects
   playing_jf.pos = player_pos(); jf_play_from_start = 0;
   sound_change = 1;   // a busy card while it asks (busy_now)
   start_job(J_PLAY);
+}
+static void audio_switch(int dir) {
+  if (!jf_audio_mode()) { if (player_active()) player_cycle_audio(dir); return; }
+  char names[16][40]; int now, n = audio_items(names, 16, &now);
+  if (n < 2) return;
+  audio_pick(((now < 0 ? 0 : now) + dir + n) % n);
+}
+
+// The picker (UP while playing): sound and subtitles in the middle, Dot's picker with Audio | Subtitles on top when
+// there's a choice of both. UP/DOWN picks at once (a converted Jellyfin stream: once the focus has rested 700 ms, as
+// it's asked for again), LEFT/RIGHT flips the switch, A or B closes.
+enum { PICK_AUDIO, PICK_SUBS };
+static int picker_on, picker_shown, picker_tabs[2], picker_ntabs, picker_tab, picker_cur;
+static int pick_wait = -1; static Uint32 pick_at;   // a converted stream's track waiting to be asked for
+static int picker_items(int kind, char names[][40], int max, int *now) {
+  if (kind == PICK_AUDIO) return audio_items(names, max, now);
+  int sn, n = player_sub_list(names + 1, max - 1, &sn);
+  snprintf(names[0], 40, "OFF");
+  *now = settings.subs && sn >= 0 ? sn + 1 : 0;
+  return n + 1;
+}
+static void picker_open(void) {
+  char names[33][40]; int now;
+  picker_ntabs = 0;
+  if (audio_items(names, 33, &now) > 1) picker_tabs[picker_ntabs++] = PICK_AUDIO;
+  if (player_sub_list(names, 33, &now) > 0) picker_tabs[picker_ntabs++] = PICK_SUBS;
+  if (!picker_ntabs) { show_notice(DOT_I_NOTE, "SOUND AND SUBTITLES", "Nothing to choose", 0, 0); return; }
+  picker_tab = 0; picker_on = 1; overlay_until = 0; on_bar = 0;
+  picker_items(picker_tabs[0], names, 33, &picker_cur);
+  if (picker_cur < 0) picker_cur = 0;
+}
+static void picker_button(int b) {
+  char names[33][40]; int now, kind = picker_tabs[picker_tab];
+  int n = picker_items(kind, names, 33, &now);
+  if (b == BTN_A || b == BTN_B || b == BTN_Y) { picker_on = 0; return; }
+  if ((b == BTN_LEFT || b == BTN_RIGHT) && picker_ntabs > 1) {
+    picker_tab = !picker_tab;
+    picker_items(picker_tabs[picker_tab], names, 33, &picker_cur);
+    if (picker_cur < 0) picker_cur = 0;
+    return;
+  }
+  if ((b != BTN_UP && b != BTN_DOWN) || n < 1) return;
+  picker_cur = (picker_cur + (b == BTN_UP ? -1 : 1) + n) % n;
+  if (kind == PICK_AUDIO) {
+    if (jf_audio_mode()) { pick_wait = picker_cur; pick_at = SDL_GetTicks(); }
+    else audio_pick(picker_cur);
+  } else {
+    settings.subs = picker_cur > 0;
+    if (picker_cur > 0) player_set_sub(picker_cur - 1);
+    settings_save(); player_apply_settings();
+  }
+}
+static void draw_picker(void) {
+  static DotPicker pk;
+  static const char *const TABS[2] = { "Audio", "Subtitles" };
+  if (pick_wait >= 0 && SDL_GetTicks() - pick_at >= 700 && !job_th) { audio_pick(pick_wait); pick_wait = -1; }
+  if (picker_on && (screen != SCR_PLAY || !player_active())) picker_on = 0;
+  static char names[33][40]; static const char *items[33]; static int n, now;   // kept: what fades out is what was up
+  const char *tabs[2]; int kind = picker_tabs[picker_tab];
+  for (int i = 0; i < picker_ntabs; i++) tabs[i] = TABS[picker_tabs[i]];
+  if (picker_on) {
+    n = picker_items(kind, names, 33, &now);
+    for (int i = 0; i < n; i++) items[i] = names[i];
+    if (kind == PICK_AUDIO && pick_wait >= 0) now = -1;   // not in use yet
+  }
+  dot_picker(dot, &pk, picker_on, tabs, picker_ntabs, picker_tab, items, n, picker_cur, now);
+  picker_shown = picker_on || pk.slide.v > 0;
 }
 
 static void draw_options(void) {
@@ -1282,7 +1360,7 @@ static void draw_options(void) {
   int f[NOPT]; for (int i = 0; i < NOPT; i++) f[i] = opt_sel == i ? DOT_FOCUS : 0;
   // Tabs (L1/R1) at the top right, the active one lit; one full-width card below with the tab's rows.
   int tab = opt_tab(opt_sel);
-  draw_tabs(TAB_NAMES, NTABS, tab);
+  static DotSwitch sw; draw_tabs(&sw, TAB_NAMES, NTABS, tab);
   int P = DOT_OPT_PITCH, x = 70, cw = CW - 60, y;
   if (tab == 0) {
     y = dot_panel(dot, 40, 108, CW, dot_panel_h(DOT_CHIP_H + 24 + 4 * P - 8) - 46, NULL);
@@ -1347,8 +1425,8 @@ static void draw_connect(void) {   // Quick Connect: the code in dots, approved 
 // The buttons, shown on the first start and from Options (X).
 static const DotHint HELP_BROWSE[] = { { "A", "Open, play, resume" }, { "X", "Play from the start" }, { "B", "Back" },
   { "L1 R1", "A page up or down" }, { "SELECT", "Sort the covers" }, { "Y", "Options" }, { "MENU", "Quit" } };
-static const DotHint HELP_PLAY[] = { { "A", "Pause" }, { "<>", "10 seconds back, on" }, { "DOWN", "Scrub, A jumps there" },
-  { "L1 R1", "Picture filter" }, { "L2 R2", "Aspect" }, { "SELECT", "Subtitles on, off" }, { "B", "Stop, save the place" } };
+static const DotHint HELP_PLAY[] = { { "A", "Pause" }, { "<>", "10 s back, on" }, { "UP", "Audio, subtitles" }, { "DOWN", "Scrub, A jumps" },
+  { "L1 R1", "Picture filter" }, { "L2 R2", "Aspect" }, { "SELECT", "Subtitles on, off" }, { "B", "Stop, keep place" } };   // two columns: short
 
 static int help_tab;   // 0 browsing, 1 playing (L1/R1)
 static void draw_next(void) {   // Up next: the episode's picture and names, and a countdown in dots
@@ -1406,8 +1484,8 @@ static void draw_help(void) {
   dot_ground(dot);
   dot_title(dot, "BUTTONS");
   static const char *const names[2] = { "Browsing", "Playing" };
-  draw_tabs(names, 2, help_tab);
-  if (help_tab) draw_help_panel(HELP_PLAY, 7); else draw_help_panel(HELP_BROWSE, 7);
+  static DotSwitch sw; draw_tabs(&sw, names, 2, help_tab);
+  if (help_tab) draw_help_panel(HELP_PLAY, sizeof HELP_PLAY / sizeof *HELP_PLAY); else draw_help_panel(HELP_BROWSE, sizeof HELP_BROWSE / sizeof *HELP_BROWSE);
   DotHint h[2] = { help_back == SCR_OPTIONS ? (DotHint){ "B", "Close" } : (DotHint){ "A", "Got it" },
                    { "L1 R1", help_tab ? "Browsing" : "Playing" } };
   dot_dock(dot, h, 2);
@@ -1452,7 +1530,7 @@ static void draw(void) {
   else if (screen == SCR_NEXT) draw_next();
   else {
     draw_video();
-    int controls = player_paused() || on_bar || now < overlay_until;
+    int controls = (player_paused() || on_bar || now < overlay_until) && !picker_on;   // the picker: alone in the middle
     static DotSlide band;
     float e = dot_slide(dot, &band, controls);
     // the band covers the bottom third: subtitles go above it, about 35 px clear of it (64 % of a 16:9 picture on the
@@ -1465,6 +1543,7 @@ static void draw(void) {
     draw_skip(e);
   }
   if (screen == SCR_PLAY) dot_set_accent(dot, player_accent());   // over the film: its colour, as the controls
+  if (screen == SCR_PLAY || picker_shown) draw_picker();
   draw_busy();   // waiting: over any screen (starting from the list, changing the sound from Options)
   if (notice_at && !dot_notice(dot, notice_icon, notice_label, notice_value, notice_at_n, notice_n, notice_at)) notice_at = 0;
   if (now < toast_until) {
@@ -1578,6 +1657,8 @@ static void on_button(int b) {
     }
     return;
   }
+  if (screen == SCR_PLAY && picker_on) { picker_button(b); return; }
+  if (screen == SCR_PLAY && b == BTN_UP && !on_bar) { picker_open(); return; }
   if (screen == SCR_PLAY && b == BTN_X) {   // skip the intro, recap or credits Jellyfin marked
     const char *label; double to; int credits;
     if (skip_now(&label, &to, &credits)) {
@@ -1753,6 +1834,7 @@ static void shots(const char *out) {
   for (int i = 0; i < FILTER_CRT; i++) on_button(BTN_R1);
   pump(600); player_frame(); shot(out, "playing-crt");
   on_button(BTN_R1); on_button(BTN_R2); pump(300); shot(out, "playing-aspect"); notice_at = 0;
+  on_button(BTN_UP); shot(out, "playing-picker"); on_button(BTN_DOWN); pump(300); shot(out, "playing-picker-sub"); on_button(BTN_B); settings.subs = 1; player_apply_settings();
   overlay_until = 0; player_pause(0); pump(800); shot(out, "playing-clean");
   int q = settings.quality;   // the two Wi-Fi warnings: stalls at 4 Mbit/s, then drops at 2
   settings.quality = QUALITY_4; net_poor = 0; net_stalls = 2; net_watch(); shot(out, "playing-wifi-slow");
@@ -1976,7 +2058,7 @@ int main(int argc, char **argv) {
       }
       int fresh = player_active() && player_frame();
       if (screen == SCR_PLAY && !fresh && !player_paused() && !on_bar && SDL_GetTicks() >= overlay_until + DOT_SLIDE_MS + 50 &&
-          !notice_at && !busy_shown && !lost_tries && player_buffering() < 0) continue;
+          !notice_at && !busy_shown && !picker_shown && !lost_tries && player_buffering() < 0) continue;
       draw();
       SDL_RenderPresent(ren);
     }

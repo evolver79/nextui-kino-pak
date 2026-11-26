@@ -592,6 +592,37 @@ void player_cycle_audio(int dir) {
   cmd("cycle", "audio", dir < 0 ? "down" : "up");
 }
 
+// The tracks by name, for the picker, as Options shows them: the language in its own name, else "TRACK n".
+static void track_name(char *out, size_t n, const char *code, int id, int forced) {
+  const char *name = lang_label(code);
+  if (name) snprintf(out, n, "%s", name); else snprintf(out, n, "TRACK %d", id);
+  if (forced) { size_t l = strlen(out); snprintf(out + l, n - l, " · FORCED"); }
+}
+int player_audio_list(char names[][40], int max, int *now) {
+  *now = -1;
+  if (!active) return 0;
+  int k = 0;
+  for (; k < nat && k < max; k++) { track_name(names[k], 40, at[k].code, at[k].id, 0); if (at[k].id == aid_now) *now = k; }
+  return k;
+}
+void player_set_audio(int i) {
+  if (i < 0 || i >= nat) return;
+  audio_by_hand = 1;
+  char id[16]; snprintf(id, sizeof id, "%d", at[i].id); setp("aid", id);
+}
+int player_sub_list(char names[][40], int max, int *now) {
+  *now = -1;
+  if (!active) return 0;
+  int k = 0, cur = o.snum[0] && strcmp(o.sid, "no") ? atoi(o.snum) : -1;
+  for (; k < nst && k < max; k++) { track_name(names[k], 40, st[k].code, st[k].id, st[k].forced); if (st[k].id == cur) *now = k; }
+  return k;
+}
+void player_set_sub(int i) {
+  if (i < 0 || i >= nst) return;
+  sub_by_hand = 1;
+  char id[16]; snprintf(id, sizeof id, "%d", st[i].id); setp("sid", id);
+}
+
 void player_cycle_sub(int dir) {
   sub_by_hand = 1;
   cmd("cycle", "sub", dir < 0 ? "down" : "up");

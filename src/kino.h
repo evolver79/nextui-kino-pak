@@ -109,6 +109,12 @@ void player_cycle_sub(int dir);            // by hand: Kino stops choosing the s
 const char *player_audio_label(void);      // the sound track: "NORSK · 2/3", "AUTO"
 int player_audio_tracks(void);
 void player_cycle_audio(int dir);          // by hand: Kino stops choosing the sound for this film
+// The tracks by name for the picker ("NORSK", "ENGLISH · FORCED", "TRACK 3"); now: the one in use (-1 none). Setting
+// one is by hand too.
+int player_audio_list(char names[][40], int max, int *now);
+void player_set_audio(int i);
+int player_sub_list(char names[][40], int max, int *now);
+void player_set_sub(int i);
 // --- lang.c: language labels ("English", "en-US", "ger", "Norsk") to one code ("eng", "deu", "nor") -----------------
 const char *lang_code(const char *s);      // NULL when not a language it knows
 const char *lang_label(const char *s);     // the language's own name for Options ("NORSK"), or NULL
