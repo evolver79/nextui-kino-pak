@@ -132,12 +132,12 @@ static char jf_play_url[1400];
 static int shots_mode;
 // Poster grid (Jellyfin films and series): 2 rows of covers, 5 of 169 x 254 on the Brick, 7 of 153 x 230 on the Smart Pro
 // (grid_fit, at the start), with room under them for the next row's top to peek out as a list's does (Dot's dot_grid:
-// ending 12 px into the dock); textures for the covers in view, by url.
+// 40 px above the dock, fading out under it), and the row before peeking out under the header once scrolled; textures for the covers in view, by url.
 static int GCOLS = 5, GPW = POSTER_W, GPH = POSTER_H;
 #define GPAGE (GCOLS * 2)
 #define GPAGE_MAX 16
 static void grid_fit(void) {
-  GPH = (DOT_DOCK_Y + 12 - DOT_PEEK - 96 - 2 * 16) / 2; if (GPH > POSTER_H) GPH = POSTER_H;
+  GPH = (DOT_DOCK_Y + 12 - 40 - 96 - 2 * 16) / 2;   // 40 of the peek above the dock, the rest fading under it if (GPH > POSTER_H) GPH = POSTER_H;
   GPW = GPH * POSTER_W / POSTER_H; GCOLS = (CW + 16) / (GPW + 16);
   if ((CW + 16) - GCOLS * (GPW + 16) > GPW / 2) {   // a lot left over: one more column, the covers a little smaller
     GCOLS++; GPW = (CW + 16) / GCOLS - 16; GPH = GPW * POSTER_H / POSTER_W;
@@ -754,7 +754,7 @@ static void draw_detail_jf(void) {
   if (strcmp(it->type, "Special")) jf_image_url(it, THUMB_W, THUMB_H, url, sizeof url); else url[0] = 0;
   draw_thumb_area(70, 126, url, url[0] == 0);
   int ep_of_series = !strcmp(it->type, "Episode") && it->series[0];   // episodes: the series is the title
-  dot_text(dot, DOT_TITLE, ep_of_series ? it->series : it->name, 70, 366 - DY, DOT_TEXT, DOT_LEFT, 360);
+  dot_text_scroll(dot, DOT_TITLE, ep_of_series ? it->series : it->name, 70, 366 - DY, DOT_TEXT, 360);   // too long: it scrolls
   jf_label(it, buf, sizeof buf);
   if (ep_of_series) { size_t l = strlen(buf); snprintf(buf + l, sizeof buf - l, " · %s", it->name); }
   dot_text(dot, DOT_LABEL_T, buf, 70, 420 - DY, DOT_LABEL, DOT_LEFT, 360);
@@ -788,7 +788,7 @@ static void draw_detail(void) {
   item_path(cursor, path, sizeof path);
   title_of(it->name, title, sizeof title);
   draw_thumb_area(70, 126, path, it->dir);
-  dot_text(dot, DOT_TITLE, it->dir ? it->name : title, 70, 366 - DY, DOT_TEXT, DOT_LEFT, 360);
+  dot_text_scroll(dot, DOT_TITLE, it->dir ? it->name : title, 70, 366 - DY, DOT_TEXT, 360);   // too long: it scrolls
   if (it->virt && jf_offline()) {
     dot_text(dot, DOT_LABEL_T, "Server · no Wi-Fi", 70, 420 - DY, DOT_LABEL, DOT_LEFT, 360);
     dot_text(dot, DOT_BODY_S, "Jellyfin needs Wi-Fi. Turn it on in the device settings.", 70, 462 - DY, DOT_LABEL, DOT_LEFT, 360);
@@ -889,13 +889,13 @@ static void draw_grid(void) {   // 5 x 2 covers; the focused one's name in the h
   }
   snprintf(label, sizeof label, "%s%s%d / %d", lab, *lab ? " · " : "", cursor + 1, nitems);
   int lw = dot_text_w(dot, DOT_LABEL_T, label);
-  dot_text(dot, DOT_TITLE, name, 40, 22, DOT_ON_GROUND, DOT_LEFT, CW - lw - 40);
-  dot_text(dot, DOT_LABEL_T, label, RIGHT, 30, DOT_ON_GROUND, DOT_RIGHT, 0);
   // The covers move the Dot way (dot_grid): the rows slide, the focus ring slides, the next row peeks out.
   static DotGrid dg;
   unsigned key = (unsigned)jf_mode * 7u + (unsigned)jf_depth * 131u + (unsigned)nitems * 17u + (unsigned)settings.sort;
   for (const char *c = jf_mode ? jstack[jf_depth].name : cwd; *c; c++) key = key * 33u + (unsigned char)*c;
-  dot_grid(dot, &dg, (int)key, nitems, GCOLS, 2, top, cursor, 40, 96, GPW, GPH, 16, 1, grid_cell, NULL);
+  dot_grid(dot, &dg, (int)key, nitems, GCOLS, 2, top, cursor, 40, 96, GPW, GPH, 16, DOT_PEEK_BELOW | DOT_PEEK_ABOVE, grid_cell, NULL);
+  dot_text_scroll(dot, DOT_TITLE, name, 40, 22, DOT_ON_GROUND, CW - lw - 40);   // over the row before, peeking out
+  dot_text(dot, DOT_LABEL_T, label, RIGHT, 30, DOT_ON_GROUND, DOT_RIGHT, 0);
   DotHint h[4]; int n = 0;
   if (folder) h[n++] = (DotHint){ "A", "Open" };
   else h[n++] = (DotHint){ "A", resumable ? "Resume" : "Play" };
@@ -1071,7 +1071,6 @@ static void draw_browse(void) {
   }
   if (nitems > ROWS) snprintf(count, sizeof count, "%d–%d of %d", top + 1, top + ROWS < nitems ? top + ROWS : nitems, nitems);
   else snprintf(count, sizeof count, nitems == 1 ? "1 item" : "%d items", nitems);
-  dot_header(dot, crumb, count);
   draw_detail();
   // The rows move the Dot way (dot_list): they slide when the list scrolls, the paper slides to the focused row, and
   // the next row's top peeks out under the last when there's more.
@@ -1080,7 +1079,8 @@ static void draw_browse(void) {
   static DotList dl;
   unsigned key = (unsigned)jf_mode * 7u + (unsigned)jf_depth * 131u + (unsigned)nitems;   // which list: where, how long
   for (const char *c = jf_mode ? jstack[jf_depth].name : cwd; *c; c++) key = key * 33u + (unsigned char)*c;
-  dot_list(dot, &dl, (int)key, nitems, ROWS, top, cursor, 476, 484 + DW, 1, browse_row, &mixed);
+  dot_list(dot, &dl, (int)key, nitems, ROWS, top, cursor, 476, 484 + DW, DOT_PEEK_BELOW | DOT_PEEK_ABOVE, browse_row, &mixed);
+  dot_header(dot, crumb, count);   // over the row before, peeking out under it
   DotHint h[4]; int n = 0;
   if (jf_mode) {
     if (nitems && !jf_loading) {
@@ -1459,7 +1459,7 @@ static void draw_next(void) {   // Up next: the episode's picture and names, and
   draw_thumb_area(70, 126 + r, next_pic, 0);
   int tx = 70 + CARD_PIC_W + 32, tw = RIGHT - 30 - tx;
   dot_text(dot, DOT_LABEL_T, series, tx, 132 + r, DOT_LABEL, DOT_LEFT, tw);
-  dot_text(dot, DOT_TITLE, name, tx, 172 + r, DOT_TEXT, DOT_LEFT, tw);
+  dot_text_scroll(dot, DOT_TITLE, name, tx, 172 + r, DOT_TEXT, tw);
   if (*line) dot_text(dot, DOT_BODY_S, line, tx, 226 + r, DOT_LABEL, DOT_LEFT, tw);
   Uint32 now = SDL_GetTicks(); int left = next_at > now ? (int)((next_at - now + 999) / 1000) : 0;
   dot_adot(dot, 70, 384 - DY + r, dot_accent(dot));
@@ -1884,6 +1884,16 @@ static void shots(const char *out) {
         SDL_Delay(50);
       }
       char nm[32]; snprintf(nm, sizeof nm, "jf-grid-%d", lib); shot(out, nm);
+      if (lib == first_lib && nitems > GPAGE * 2) {   // scrolled down: the row before peeks out under the header
+        set_cursor(GPAGE + 1);
+        for (int t = 0; t < 300; t++) {
+          int all = 1; const uint8_t *rgb;
+          for (int i = top - GCOLS; i < nitems && i < top + GPAGE + GCOLS; i++) { char u[600]; jf_poster_url(&jitems[i], POSTER_W, POSTER_H, u, sizeof u); all &= media_poster(u, &rgb); }
+          if (all) break;
+          SDL_Delay(50);
+        }
+        shot(out, "jf-grid-scrolled"); set_cursor(1);
+      }
       if (lib == first_lib) {   // the other two sorts (back to the user's sort after)
         int was = settings.sort;
         for (int k = 1; k < NSORT; k++) {
