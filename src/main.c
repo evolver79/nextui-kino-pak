@@ -57,8 +57,12 @@ static Uint32 overlay_until, toast_until, seek_until;
 static int seek_dir;   // -1/1: the rewind/forward button shows the last seek for a moment
 static int on_bar;     // overlay focus on the progress bar (scrubbing); scrub_to = where A would jump
 static double scrub_to;
-static char info[48];   // "ASPECT · 16:9" pill after L2/R2 or L1/R1 while playing
-static Uint32 info_until;
+// A notice in the middle (Dot's dot_notice) after a choice: filter, aspect, subtitles, sort. notice_at: when (0 none).
+static char notice_label[32], notice_value[64];
+static int notice_icon, notice_at_n, notice_n;
+static Uint32 notice_at;
+static int opening;        // a film asked for and not playing yet: the busy card says STARTING
+static int sound_change;   // the sound track is being changed (asking the server for the stream again)
 static int lost_tries; static Uint32 retry_at;   // a Jellyfin stream that broke off: opened again from where it was
 // The network during this Jellyfin film: stalls (stops to buffer once playing), Wi-Fi drops since it started, and
 // whether Kino has said the Wi-Fi can't keep up (then the buffering pill says so too, for the rest of the film).
@@ -372,6 +376,10 @@ static void list_dir(void) {
 
 // --- Jellyfin ---------------------------------------------------------------------------------------------------
 static void show_toast(const char *s);
+static void show_notice(int icon, const char *label, const char *value, int at, int n) {
+  notice_icon = icon; notice_at_n = at; notice_n = n; notice_at = SDL_GetTicks();
+  snprintf(notice_label, sizeof notice_label, "%s", label); snprintf(notice_value, sizeof notice_value, "%s", value);
+}
 // Up next: when an episode ends, the next one (the next file in an SD card series folder, or the server's next
 // episode of the series) plays after a countdown; A plays it now, B stays in the browser. Options > Brick turns it off.
 #define NEXT_MS 10000
@@ -379,6 +387,7 @@ static int next_kind;              // 0 none, 1 the SD card's next file (items[n
 static int next_local;
 static JfItem next_jf;
 static Uint32 next_at;             // when it starts by itself
+static Uint32 next_leave; static int next_go;   // A/B or the countdown: the card going out (Dot's dot_rise), then go (or not)
 static char next_pic[1100];        // its picture: the file's path, or the server's image URL
 
 static int job_run(void *u) {
@@ -446,8 +455,7 @@ static void jf_sort_next(void) {   // SELECT in the grid: Name, Recently added, 
   settings.sort = (settings.sort + 1) % NSORT;
   settings_save();
   jf_view(id);
-  char t[64]; snprintf(t, sizeof t, "Sort · %s", SORT_NAMES[settings.sort]);
-  show_toast(t);
+  show_notice(DOT_I_FILM, "SORT", SORT_NAMES[settings.sort], settings.sort + 1, NSORT);
 }
 
 static void jf_open(const char *id, const char *type, const char *name) {   // list a level (id "" = libraries)
@@ -524,7 +532,7 @@ static void job_finished(void) {
     on_bar = 0;
     overlay_until = SDL_GetTicks() + DOT_AUTOHIDE_MS;
     last_save = last_report = SDL_GetTicks();
-    toast_until = 0;
+    sound_change = 0;
     if (!lost_tries && wifi_state() == WIFI_WEAK) { show_toast("Weak Wi-Fi: this film may stop to buffer"); net_log("weak", "toast: weak Wi-Fi"); }
   } else if (job_kind == J_NEXT) {
     if (job_result == 1 && screen == SCR_BROWSE) {
@@ -560,8 +568,7 @@ static void local_sort_next(void) {   // SELECT in a local grid: as in Jellyfin
   settings_save();
   list_dir();
   for (int i = 0; i < nitems; i++) if (!strcmp(items[i].name, keep)) { set_cursor(i); break; }
-  char t[64]; snprintf(t, sizeof t, "Sort · %s", SORT_NAMES[settings.sort]);
-  show_toast(t);
+  show_notice(DOT_I_FILM, "SORT", SORT_NAMES[settings.sort], settings.sort + 1, NSORT);
 }
 
 static void enter_dir(void) {
@@ -603,7 +610,7 @@ static void play_jf(const JfItem *it, int from_start) {   // first ask the serve
   if (!strcmp(playing_jf.type, "Episode") && playing_jf.index)
     snprintf(playing_title, sizeof playing_title, "S%d · E%d · %s", playing_jf.season, playing_jf.index, playing_jf.name);
   else snprintf(playing_title, sizeof playing_title, "%s", playing_jf.name);
-  snprintf(toast, sizeof toast, "Starting %s", playing_jf.name); toast_until = SDL_GetTicks() + 15000;
+  toast_until = 0; opening = 1;   // the busy card says it's starting (busy_now)
   start_job(J_PLAY);
 }
 
@@ -620,6 +627,7 @@ static void play(int i, int from_start) {
   double pos = 0;
   if (!from_start && store_resume(playing, &pos, NULL) != RES_PARTIAL) pos = 0;
   player_open(playing, pos);
+  opening = 1;
   screen = SCR_PLAY;
   on_bar = 0;
   overlay_until = SDL_GetTicks() + DOT_AUTOHIDE_MS;
@@ -702,6 +710,8 @@ static void draw_thumb_area(int x, int y, const char *path, int is_dir) {
   }
   if (!is_dir && !strcmp(thumb_for, path) && thumb_tex) {
     SDL_Rect d = { x, y, CARD_PIC_W, CARD_PIC_H };
+    SDL_SetTextureBlendMode(thumb_tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureAlphaMod(thumb_tex, (Uint8)(dot_alpha(dot) * 255));   // fades with its card (Up next coming and going)
     SDL_RenderCopy(ren, thumb_tex, NULL, &d);
     dot_corners(dot, x, y, CARD_PIC_W, CARD_PIC_H, 20, DOT_BG_GLASS);
   } else {
@@ -1184,18 +1194,38 @@ static void net_watch(void) {
   net_log("warning", "toast: %s", t);
 }
 
-// Top centre while the film waits for the network: buffering and how far, or the tries to reconnect; weak Wi-Fi added.
-static void draw_net_status(void) {
-  int b = player_buffering();
-  if (!lost_tries && b < 0) return;
-  char s[96];
-  const char *wifi = wifi_state() == WIFI_OFF ? " · no Wi-Fi" : wifi_state() == WIFI_WEAK ? " · weak Wi-Fi" :
-                     net_poor ? " · Wi-Fi too slow" : "";
-  if (lost_tries) snprintf(s, sizeof s, "Connection lost · reconnecting %d/%d%s", lost_tries, LOST_TRIES, wifi);
-  else if (b > 100) snprintf(s, sizeof s, "Waiting for the server%s", wifi);
-  else snprintf(s, sizeof s, "Buffering %d%%%s", b, wifi);
-  int y = player_paused() || on_bar || SDL_GetTicks() < overlay_until ? 100 : 36;   // under the title pills
-  dot_pill(dot, W / 2, y, s, 1, 1, DOT_CENTER);
+// Waiting, as a Dot busy card in the middle (a ring of dots running round): a Jellyfin film starting, the sound being
+// changed, reconnecting, or buffering (with how far, and the Wi-Fi when it's weak). Opening or seeking shows only after
+// 600 ms, so a quick seek doesn't flash it. Returns 0 when nothing is being waited for.
+static int busy_shown;   // the card is up or still fading out: the main loop keeps drawing
+static int busy_now(char *label, size_t ln, char *value, size_t vn) {
+  static Uint32 wait_since;
+  int b = player_active() ? player_buffering() : -1;
+  if (b < 0 || screen != SCR_PLAY) wait_since = 0;
+  else if (!wait_since) wait_since = SDL_GetTicks();
+  if (!player_active() && !job_th) opening = 0;
+  if (screen == SCR_PLAY && b < 0 && !job_th) opening = 0;   // playing
+  const char *wifi = wifi_state() == WIFI_OFF ? "No Wi-Fi" : wifi_state() == WIFI_WEAK ? "Weak Wi-Fi" :
+                     net_poor ? "Wi-Fi too slow" : NULL;
+  snprintf(value, vn, "%s", jf_playing && wifi ? wifi : playing_title);
+  if (lost_tries) { snprintf(label, ln, "RECONNECTING %d OF %d", lost_tries, LOST_TRIES); return 1; }
+  if (jf_playing && job_th && job_kind == J_PLAY) {
+    if (sound_change) { snprintf(label, ln, "CHANGING THE SOUND"); return 1; }
+    snprintf(label, ln, "STARTING"); return 1;
+  }
+  if (opening && jf_playing && b > 100) { snprintf(label, ln, "STARTING"); return 1; }   // on from the line above, no gap
+  if (b < 0 || SDL_GetTicks() - wait_since < 600) return 0;
+  if (b > 100) snprintf(label, ln, opening ? "STARTING" : jf_playing ? "WAITING FOR THE SERVER" : "LOADING");
+  else snprintf(label, ln, "BUFFERING %d%%", b);
+  return 1;
+}
+static void draw_busy(void) {
+  static DotSlide sl; static char l[48], v[160];
+  char nl[48], nv[160];
+  int show = busy_now(nl, sizeof nl, nv, sizeof nv);
+  if (show) { snprintf(l, sizeof l, "%s", nl); snprintf(v, sizeof v, "%s", nv); }   // what fades out is what was up
+  dot_busy(dot, &sl, show, DOT_I_FILM, l, v, 1);
+  busy_shown = show || sl.v > 0;
 }
 
 static const char *DEINTS[NDEINT] = { "AUTO", "ON", "OFF" };
@@ -1229,7 +1259,7 @@ static void audio_switch(int dir) {
   jf_audio(((cur + dir) % n + n) % n, &idx, &code);
   jf_audio_want = idx;   // kept for this film, also through reconnects
   playing_jf.pos = player_pos(); jf_play_from_start = 0;
-  show_toast("Changing the sound…");
+  sound_change = 1;   // a busy card while it asks (busy_now)
   start_job(J_PLAY);
 }
 
@@ -1325,19 +1355,26 @@ static void draw_next(void) {   // Up next: the episode's picture and names, and
     title_of(items[next_local].name, name, sizeof name);
     MediaInfo mi; if (media_info(next_pic, &mi) && mi.duration > 0) { char t[24]; fmt_time(mi.duration, t, sizeof t); snprintf(line, sizeof line, "Length %s", t); }
   }
-  dot_card(dot, 40, 96, CW, 528 - DY);
-  draw_thumb_area(70, 126, next_pic, 0);
+  // The card comes in and goes the Dot way (dot_rise): the screen waits for it to go (next_leave, in the main loop).
+  static Uint32 came, seen;   // when it came up; when it was last drawn (away for a moment: comes in again)
+  Uint32 t = SDL_GetTicks();
+  if (!seen || t - seen > 250) came = t;
+  seen = t;
+  int r = dot_rise(dot, (t - came) / (float)DOT_IN_MS, next_leave ? (t - next_leave) / (float)DOT_OUT_MS : 0);
+  dot_card(dot, 40, 96 + r, CW, 528 - DY);
+  draw_thumb_area(70, 126 + r, next_pic, 0);
   int tx = 70 + CARD_PIC_W + 32, tw = RIGHT - 30 - tx;
-  dot_text(dot, DOT_LABEL_T, series, tx, 132, DOT_LABEL, DOT_LEFT, tw);
-  dot_text(dot, DOT_TITLE, name, tx, 172, DOT_TEXT, DOT_LEFT, tw);
-  if (*line) dot_text(dot, DOT_BODY_S, line, tx, 226, DOT_LABEL, DOT_LEFT, tw);
+  dot_text(dot, DOT_LABEL_T, series, tx, 132 + r, DOT_LABEL, DOT_LEFT, tw);
+  dot_text(dot, DOT_TITLE, name, tx, 172 + r, DOT_TEXT, DOT_LEFT, tw);
+  if (*line) dot_text(dot, DOT_BODY_S, line, tx, 226 + r, DOT_LABEL, DOT_LEFT, tw);
   Uint32 now = SDL_GetTicks(); int left = next_at > now ? (int)((next_at - now + 999) / 1000) : 0;
-  dot_adot(dot, 70, 384 - DY, dot_accent(dot));
-  dot_text(dot, DOT_LABEL_T, "Playing in", 102, 378 - DY, DOT_TEXT, DOT_LEFT, 0);
+  dot_adot(dot, 70, 384 - DY + r, dot_accent(dot));
+  dot_text(dot, DOT_LABEL_T, "Playing in", 102, 378 - DY + r, DOT_TEXT, DOT_LEFT, 0);
   char sec[16]; snprintf(sec, sizeof sec, "0:%02d", left);
-  dot_time(dot, DOT_DISPLAY_XL, sec, 68, 420 - DY, DOT_TEXT, DOT_LEFT);
+  dot_time(dot, DOT_DISPLAY_XL, sec, 68, 420 - DY + r, DOT_TEXT, DOT_LEFT);
   float done = next_at > now ? 1 - (float)(next_at - now) / NEXT_MS : 1;
-  dot_progress(dot, 70, 574 - DY, CW - 60, done, 0);
+  dot_progress(dot, 70, 574 - DY + r, CW - 60, done, 0);
+  dot_set_alpha(dot, 1);
   DotHint h[] = { { "A", "Play now" }, { "B", "Not now" } };
   dot_dock(dot, h, 2);
 }
@@ -1412,9 +1449,10 @@ static void draw(void) {
     player_sub_above(controls ? above : 100);
     if (controls) draw_overlay();
     draw_skip(controls);
-    if (now < info_until) dot_pill(dot, W / 2, 36, info, 0, 1, DOT_CENTER);
-    else draw_net_status();
   }
+  if (screen == SCR_PLAY) dot_set_accent(dot, player_accent());   // over the film: its colour, as the controls
+  draw_busy();   // waiting: over any screen (starting from the list, changing the sound from Options)
+  if (notice_at && !dot_notice(dot, notice_icon, notice_label, notice_value, notice_at_n, notice_n, notice_at)) notice_at = 0;
   if (now < toast_until) {
     Uint32 left = toast_until - now;
     dot_toast(dot, toast, left < DOT_FADE_MS ? left / (float)DOT_FADE_MS : 1);
@@ -1496,9 +1534,8 @@ static void on_button(int b) {
     else if (b == BTN_A && !jf_code[0] && !job_th) jf_enter();
     return;
   }
-  if (screen == SCR_NEXT) {
-    if (b == BTN_A) start_next();
-    else if (b == BTN_B) { next_kind = 0; screen = SCR_BROWSE; }
+  if (screen == SCR_NEXT) {   // the card goes out first (the main loop then plays it, or not)
+    if ((b == BTN_A || b == BTN_B) && !next_leave) { next_leave = SDL_GetTicks(); next_go = b == BTN_A; }
     return;
   }
   if (screen == SCR_HELP) {
@@ -1564,12 +1601,11 @@ static void on_button(int b) {
         int dir = b == BTN_L1 || b == BTN_L2 ? -1 : 1;
         if (b == BTN_L1 || b == BTN_R1) {
           settings.filter = (settings.filter + NFILTER + dir) % NFILTER;
-          snprintf(info, sizeof info, "Filter · %s", FILTER_NAMES[settings.filter]);
+          show_notice(DOT_I_FILM, "FILTER", FILTER_NAMES[settings.filter], settings.filter + 1, NFILTER);
         } else {
           settings.aspect = (settings.aspect + NASPECT + dir) % NASPECT;
-          snprintf(info, sizeof info, "Aspect · %s", ASPECT_NAMES[settings.aspect]);
+          show_notice(DOT_I_FILM, "ASPECT", ASPECT_NAMES[settings.aspect], settings.aspect + 1, NASPECT);
         }
-        info_until = SDL_GetTicks() + 1500;
         overlay_until = 0;
         settings_save();
         player_apply_settings();
@@ -1577,8 +1613,7 @@ static void on_button(int b) {
       }
       case BTN_SELECT:
         settings.subs = !settings.subs;
-        snprintf(info, sizeof info, "Subtitles · %s", settings.subs ? "On" : "Off");
-        info_until = SDL_GetTicks() + 1500;
+        show_notice(DOT_I_FILM, "SUBTITLES", settings.subs ? "On" : "Off", 0, 0);
         overlay_until = 0;
         settings_save();
         player_apply_settings();
@@ -1692,6 +1727,7 @@ static void shots(const char *out) {
     settings.aspect = ASPECT_STRETCH; player_apply_settings(); pump(800); shot(out, "playing-subtitles-stretch");
     settings.aspect = ASPECT_4_3; player_apply_settings(); pump(800); shot(out, "playing-subtitles-4-3");
     settings.aspect = was; player_apply_settings(); pump(400); }
+  player_seek(-8); pump(600);   // back a little: the 10 s seek below must stay inside the 30 s test episode
   player_pause(1); pump(400);
   shot(out, "playing");
   on_button(BTN_RIGHT); pump(200); shot(out, "playing-seek");
@@ -1699,7 +1735,7 @@ static void shots(const char *out) {
   shot(out, "playing-scrub"); on_button(BTN_B);
   for (int i = 0; i < FILTER_CRT; i++) on_button(BTN_R1);
   pump(600); player_frame(); shot(out, "playing-crt");
-  on_button(BTN_R1); on_button(BTN_R2); pump(300); shot(out, "playing-aspect");
+  on_button(BTN_R1); on_button(BTN_R2); pump(300); shot(out, "playing-aspect"); notice_at = 0;
   overlay_until = 0; player_pause(0); pump(800); shot(out, "playing-clean");
   int q = settings.quality;   // the two Wi-Fi warnings: stalls at 4 Mbit/s, then drops at 2
   settings.quality = QUALITY_4; net_poor = 0; net_stalls = 2; net_watch(); shot(out, "playing-wifi-slow");
@@ -1755,7 +1791,7 @@ static void shots(const char *out) {
           }
           snprintf(nm, sizeof nm, "jf-grid-sort-%d", settings.sort); shot(out, nm);
         }
-        settings.sort = was; settings_save(); jf_view(NULL); toast_until = 0;
+        settings.sort = was; settings_save(); jf_view(NULL); toast_until = 0; notice_at = 0;
       }
     }
   }
@@ -1916,10 +1952,14 @@ int main(int argc, char **argv) {
       if (lost_tries && !retry_at && player_active() && player_buffering() < 0 && player_pos() > playing_jf.pos + 10)
         { lost_tries = 0; net_log(NULL, "reconnected, playing for 10 s at %.0f s", player_pos()); }   // a later drop: five new tries
       if (screen == SCR_CONNECT && jf_code[0] && !job_th && SDL_GetTicks() >= next_poll) start_job(J_POLL);
-      if (screen == SCR_NEXT && SDL_GetTicks() >= next_at && !job_th) start_next();
+      if (screen == SCR_NEXT && SDL_GetTicks() >= next_at && !job_th && !next_leave) { next_leave = SDL_GetTicks(); next_go = 1; }
+      if (screen == SCR_NEXT && next_leave && SDL_GetTicks() - next_leave >= DOT_OUT_MS && !job_th) {
+        next_leave = 0;
+        if (next_go) start_next(); else { next_kind = 0; screen = SCR_BROWSE; }
+      }
       int fresh = player_active() && player_frame();
       if (screen == SCR_PLAY && !fresh && !player_paused() && !on_bar && SDL_GetTicks() >= overlay_until + 100 &&
-          SDL_GetTicks() >= info_until + 100 && !lost_tries && player_buffering() < 0) continue;
+          !notice_at && !busy_shown && !lost_tries && player_buffering() < 0) continue;
       draw();
       SDL_RenderPresent(ren);
     }
