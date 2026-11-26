@@ -693,10 +693,10 @@ static void start_next(void) {   // Up next: play it (A, or the countdown ran ou
 
 // --- drawing --------------------------------------------------------------------------------------------------
 // The picture on the info card, inset like everything else on a card (30 px); drawn a little smaller than it is made.
-// On a shorter screen it is smaller by that much in height (the Smart Pro: 275 wide, about as wide as the Brick's 360
-// at its lower ppi), and what is under it moves up as much.
-#define CARD_PIC_W (360 - DY * THUMB_W / THUMB_H)
-#define CARD_PIC_H (CARD_PIC_W * THUMB_H / THUMB_W)
+// On a shorter screen it keeps the card's width and is that much less high (the Smart Pro: 360 x 154, the middle of the
+// picture), and what is under it moves up as much.
+#define CARD_PIC_W 360
+#define CARD_PIC_H (CARD_PIC_W * THUMB_H / THUMB_W - DY)
 static void draw_thumb_area(int x, int y, const char *path, int is_dir) {
   int w = THUMB_W, h = THUMB_H;
   const uint8_t *rgb; Uint32 acc;
@@ -710,9 +710,11 @@ static void draw_thumb_area(int x, int y, const char *path, int is_dir) {
   }
   if (!is_dir && !strcmp(thumb_for, path) && thumb_tex) {
     SDL_Rect d = { x, y, CARD_PIC_W, CARD_PIC_H };
+    int sh = THUMB_H * CARD_PIC_H / (CARD_PIC_W * THUMB_H / THUMB_W);   // a shorter card: the middle of the picture
+    SDL_Rect src = { 0, (THUMB_H - sh) / 2, THUMB_W, sh };
     SDL_SetTextureBlendMode(thumb_tex, SDL_BLENDMODE_BLEND);
     SDL_SetTextureAlphaMod(thumb_tex, (Uint8)(dot_alpha(dot) * 255));   // fades with its card (Up next coming and going)
-    SDL_RenderCopy(ren, thumb_tex, NULL, &d);
+    SDL_RenderCopy(ren, thumb_tex, &src, &d);
     dot_corners(dot, x, y, CARD_PIC_W, CARD_PIC_H, 20, DOT_BG_GLASS);
   } else {
     dot_rect(dot, x, y, CARD_PIC_W, CARD_PIC_H, 20, DOT_RAISED, 255);
