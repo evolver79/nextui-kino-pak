@@ -717,8 +717,12 @@ static void draw_thumb_area(int x, int y, const char *path, int is_dir) {
     SDL_RenderCopy(ren, thumb_tex, &src, &d);
     dot_corners(dot, x, y, CARD_PIC_W, CARD_PIC_H, 20, DOT_BG_GLASS);
   } else {
-    dot_rect(dot, x, y, CARD_PIC_W, CARD_PIC_H, 20, DOT_RAISED, 255);
-    dot_icon(dot, is_dir ? DOT_I_FOLDER : DOT_I_FILM, x + CARD_PIC_W / 2, y + CARD_PIC_H / 2, 72, DOT_DIM);
+    // no picture: paper with the icon in ink at 80%, so it stands out from the card
+    float a = dot_alpha(dot);
+    dot_rect(dot, x, y, CARD_PIC_W, CARD_PIC_H, 20, DOT_PAPER, 255);
+    dot_set_alpha(dot, a * .8f);
+    dot_icon(dot, is_dir ? DOT_I_FOLDER : DOT_I_FILM, x + CARD_PIC_W / 2, y + CARD_PIC_H / 2, 72, DOT_INK);
+    dot_set_alpha(dot, a);
   }
 }
 
